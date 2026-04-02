@@ -1278,8 +1278,8 @@ async def _fire_promo_session(bypass_lock_guard: bool = False):
     logger.info(f"[Promo] Firing for {len(all_groups)} group(s): "
                 f"{[getattr(g,'title',g.id) for g in all_groups]}")
 
-    # Stagger each group's conversation by 0–20 min so they don't start together
-    stagger_seconds = sorted(random.uniform(0, 1200) for _ in range(len(all_groups)))
+    # First group starts immediately; others stagger by 3–8 min so groups look independent
+    stagger_seconds = [0] + sorted(random.uniform(180, 480) for _ in range(len(all_groups) - 1))
 
     async def delayed_promo(group, delay):
         if delay > 0:
