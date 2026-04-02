@@ -9,6 +9,8 @@ import pytz
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError, SessionPasswordNeededError
+from telethon.tl.functions.messages import EditChatDefaultBannedRightsRequest
+from telethon.tl.types import ChatBannedRights
 import schedule
 import time as time_mod
 
@@ -196,12 +198,18 @@ RUNNING_PAGE = STYLE + """
   <div class="success"><span class="status-dot"></span>Bot is active and sending messages on schedule</div>
   <p style="margin-top:16px"><strong>Daily Schedule (Nigeria Time / WAT)</strong></p>
   <p style="margin-top:14px; line-height:2.2">
+    🔒 3:30 AM — Groups locked<br>
     3:50 AM — Extra Signal warning<br>
     4:00 AM — Extra Signal instructions<br>
+    🔓 4:05 AM — Groups unlocked<br><br>
+    🔒 11:30 AM — Groups locked<br>
     11:50 AM — First Signal warning<br>
     12:00 PM — First Signal instructions<br>
+    🔓 12:05 PM — Groups unlocked<br><br>
+    🔒 1:30 PM — Groups locked<br>
     1:50 PM — Second Signal warning<br>
-    2:00 PM — Second Signal instructions
+    2:00 PM — Second Signal instructions<br>
+    🔓 2:05 PM — Groups unlocked
   </p>
 </div>
 """
@@ -279,6 +287,52 @@ def verify_password():
 bot_client = None
 
 
+async def lock_all_groups(label: str):
+    logger.info(f"[{label}] Locking all groups...")
+    for group in GROUPS:
+        try:
+            await bot_client(EditChatDefaultBannedRightsRequest(
+                peer=group,
+                banned_rights=ChatBannedRights(
+                    until_date=None,
+                    send_messages=True,
+                    send_media=True,
+                    send_stickers=True,
+                    send_gifs=True,
+                    send_games=True,
+                    send_inline=True,
+                    embed_links=True,
+                )
+            ))
+            logger.info(f"[{label}] 🔒 Locked {group}")
+            await asyncio.sleep(2)
+        except Exception as e:
+            logger.error(f"[{label}] ✗ Failed to lock {group}: {e}")
+
+
+async def unlock_all_groups(label: str):
+    logger.info(f"[{label}] Unlocking all groups...")
+    for group in GROUPS:
+        try:
+            await bot_client(EditChatDefaultBannedRightsRequest(
+                peer=group,
+                banned_rights=ChatBannedRights(
+                    until_date=None,
+                    send_messages=False,
+                    send_media=False,
+                    send_stickers=False,
+                    send_gifs=False,
+                    send_games=False,
+                    send_inline=False,
+                    embed_links=False,
+                )
+            ))
+            logger.info(f"[{label}] 🔓 Unlocked {group}")
+            await asyncio.sleep(2)
+        except Exception as e:
+            logger.error(f"[{label}] ✗ Failed to unlock {group}: {e}")
+
+
 async def send_to_all_groups(message: str, label: str):
     for group in GROUPS:
         try:
@@ -297,6 +351,14 @@ def fire_job(message, label):
     asyncio.run_coroutine_threadsafe(send_to_all_groups(message, label), _loop)
 
 
+def fire_lock(label):
+    asyncio.run_coroutine_threadsafe(lock_all_groups(label), _loop)
+
+
+def fire_unlock(label):
+    asyncio.run_coroutine_threadsafe(unlock_all_groups(label), _loop)
+
+
 def get_utc(nigeria_h, nigeria_m):
     now = datetime.now(NIGERIA_TZ)
     target = now.replace(hour=nigeria_h, minute=nigeria_m, second=0, microsecond=0)
@@ -304,13 +366,25 @@ def get_utc(nigeria_h, nigeria_m):
 
 
 def run_scheduler():
-    schedule.every().day.at(get_utc(3, 50)).do(fire_job, MSG_350AM, "Extra Signal")
-    schedule.every().day.at(get_utc(4, 0)).do(fire_job, MSG_400AM, "Extra Signal")
-    schedule.every().day.at(get_utc(11, 50)).do(fire_job, MSG_1150AM, "First Basic Signal")
-    schedule.every().day.at(get_utc(12, 0)).do(fire_job, MSG_1200PM, "First Basic Signal")
-    schedule.every().day.at(get_utc(13, 50)).do(fire_job, MSG_150PM, "Second Basic Signal")
-    schedule.every().day.at(get_utc(14, 0)).do(fire_job, MSG_200PM, "Second Basic Signal")
-    logger.info("Scheduler active. Jobs scheduled:")
+    # ── Session 1: Extra Signal ─────────────────────────────
+    schedule.every().day.at(get_utc(3, 30)).do(fire_lock,   "Extra Signal")
+    schedule.every().day.at(get_utc(3, 50)).do(fire_job,    MSG_350AM, "Extra Signal")
+    schedule.every().day.at(get_utc(4,  0)).do(fire_job,    MSG_400AM, "Extra Signal")
+    schedule.every().day.at(get_utc(4,  5)).do(fire_unlock, "Extra Signal")
+
+    # ── Session 2: First Basic Signal ───────────────────────
+    schedule.every().day.at(get_utc(11, 30)).do(fire_lock,   "First Basic Signal")
+    schedule.every().day.at(get_utc(11, 50)).do(fire_job,    MSG_1150AM, "First Basic Signal")
+    schedule.every().day.at(get_utc(12,  0)).do(fire_job,    MSG_1200PM, "First Basic Signal")
+    schedule.every().day.at(get_utc(12,  5)).do(fire_unlock, "First Basic Signal")
+
+    # ── Session 3: Second Basic Signal ──────────────────────
+    schedule.every().day.at(get_utc(13, 30)).do(fire_lock,   "Second Basic Signal")
+    schedule.every().day.at(get_utc(13, 50)).do(fire_job,    MSG_150PM, "Second Basic Signal")
+    schedule.every().day.at(get_utc(14,  0)).do(fire_job,    MSG_200PM, "Second Basic Signal")
+    schedule.every().day.at(get_utc(14,  5)).do(fire_unlock, "Second Basic Signal")
+
+    logger.info("Scheduler active. Full daily schedule (UTC):")
     for job in schedule.jobs:
         logger.info(f"  {job}")
     while True:
