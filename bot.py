@@ -478,11 +478,17 @@ def run_scheduler():
 
 
 def raw_id(val: str) -> int:
-    """Strip any -100 prefix and return the bare positive channel ID."""
-    v = val.strip().lstrip("-")
-    if v.startswith("100") and len(v) > 12:
-        v = v[3:]
-    return int(v)
+    """Return the bare positive channel ID.
+    Handles both Bot-API format (-1001003257839303) and plain IDs (1003257839303).
+    """
+    n = int(val.strip())
+    if n < 0:
+        # Bot API format: -1001003257839303 → strip leading -100 → 1003257839303
+        s = str(-n)
+        if s.startswith("100") and len(s) > 12:
+            return int(s[3:])
+        return -n
+    return n
 
 
 async def resolve_groups():
