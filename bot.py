@@ -1066,44 +1066,30 @@ _ALL_PROMO_MSGS = [m for msgs in PROMO_TOPICS.values() for m in msgs]
 
 def _near_lock_window(warn_minutes: int = 25) -> bool:
     """
-    Returns True if the current WAT time is:
-      - currently inside a signal lock window, OR
-      - within `warn_minutes` minutes of one starting.
-    Used to abort promo messages before they'd clash with a locked group.
+    Returns True if the current WAT time is inside — or within warn_minutes of —
+    an ACTIVE SIGNAL lock window.  The night lock is intentionally excluded here
+    because the promo schedule already avoids night hours, and the group may
+    legitimately be open at night if the night lock didn't fire.
 
-    Lock windows (WAT):
+    Signal lock windows (WAT):
       03:30 – 04:05  Extra Signal
       11:30 – 12:05  First Basic Signal
       13:30 – 14:05  Second Basic Signal
-      17:00 – 03:00  Night Lock (next day)
     """
     now = datetime.now(NIGERIA_TZ)
     m   = now.hour * 60 + now.minute   # minutes since midnight WAT
 
-    # Define each window as (lock_start_min, unlock_min)
     WINDOWS = [
         (3*60+30,  4*60+5),    # Extra Signal
         (11*60+30, 12*60+5),   # First Basic Signal
         (13*60+30, 14*60+5),   # Second Basic Signal
     ]
-    # Night lock spans midnight — check separately
-    night_start = 17*60   # 17:00
-    night_end   = 3*60    # 03:00 next day
 
     for lock_start, lock_end in WINDOWS:
-        # Currently inside this lock window
-        if lock_start <= m < lock_end:
+        if lock_start <= m < lock_end:          # currently inside lock
             return True
-        # Approaching this lock window
-        if lock_start - warn_minutes <= m < lock_start:
+        if lock_start - warn_minutes <= m < lock_start:  # approaching lock
             return True
-
-    # Night lock: locked from 17:00 to 03:00
-    if m >= night_start or m < night_end:
-        return True
-    # Approaching night lock
-    if night_start - warn_minutes <= m < night_start:
-        return True
 
     return False
 
