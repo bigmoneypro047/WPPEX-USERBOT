@@ -887,12 +887,12 @@ def run_scheduler():
     schedule.every().day.at(get_utc(3,  8)).do(fire_mbr, 1, random.choice(MORNING_MSGS), "Morning-MBR")
     schedule.every().day.at(get_utc(3, 12)).do(fire_mbr, 2, random.choice(MORNING_MSGS), "Morning-MBR")
 
-    # ── Pre-extra-signal chat (3:46–3:49 AM WAT, signal at 4:00 AM) ──────────
-    schedule.every().day.at(get_utc(3, 46)).do(
+    # ── Pre-extra-signal Q&A — once per week (Monday only) ───────────────────
+    schedule.every().monday.at(get_utc(3, 46)).do(
         fire_mbr, 3, random.choice(PRE_SIGNAL_QUESTIONS), "PreExtra-MBR")
-    schedule.every().day.at(get_utc(3, 47)).do(
+    schedule.every().monday.at(get_utc(3, 47)).do(
         fire_mbr, 0, f"Next signal is at {_UK_EXTRA} UK time 🔔", "PreExtra-MBR")
-    schedule.every().day.at(get_utc(3, 49)).do(
+    schedule.every().monday.at(get_utc(3, 49)).do(
         fire_mbr, 1, random.choice(PRE_SIGNAL_CONFIRMS), "PreExtra-MBR")
 
     # ── Post-extra-signal reactions (4:02–4:08 AM WAT) ───────────────────────
@@ -904,12 +904,12 @@ def run_scheduler():
     schedule.every().day.at(get_utc(8,  0)).do(fire_mbr, 1, random.choice(GENERAL_MSGS), "General-MBR")
     schedule.every().day.at(get_utc(10, 30)).do(fire_mbr, 3, random.choice(GENERAL_MSGS), "General-MBR")
 
-    # ── Pre-first-signal chat (11:41–11:46 AM WAT, signal at 12:00 PM) ───────
-    schedule.every().day.at(get_utc(11, 41)).do(
+    # ── Pre-first-signal Q&A — once per week (Monday only) ──────────────────
+    schedule.every().monday.at(get_utc(11, 41)).do(
         fire_mbr, 1, random.choice(PRE_SIGNAL_QUESTIONS), "PreFirst-MBR")
-    schedule.every().day.at(get_utc(11, 43)).do(
+    schedule.every().monday.at(get_utc(11, 43)).do(
         fire_mbr, 3, f"Signal at {_UK_FIRST} UK time today 🔔", "PreFirst-MBR")
-    schedule.every().day.at(get_utc(11, 46)).do(
+    schedule.every().monday.at(get_utc(11, 46)).do(
         fire_mbr, 0, random.choice(PRE_SIGNAL_CONFIRMS), "PreFirst-MBR")
 
     # ── Post-first-signal reactions (12:02–12:08 PM WAT) ─────────────────────
@@ -917,12 +917,12 @@ def run_scheduler():
     schedule.every().day.at(get_utc(12,  4)).do(fire_mbr, 1, random.choice(SIGNAL_REACTIONS), "PostFirst-MBR")
     schedule.every().day.at(get_utc(12,  8)).do(fire_mbr, 0, random.choice(SIGNAL_REACTIONS), "PostFirst-MBR")
 
-    # ── Pre-second-signal chat (1:41–1:46 PM WAT, signal at 2:00 PM) ─────────
-    schedule.every().day.at(get_utc(13, 41)).do(
+    # ── Pre-second-signal Q&A — once per week (Monday only) ─────────────────
+    schedule.every().monday.at(get_utc(13, 41)).do(
         fire_mbr, 3, random.choice(PRE_SIGNAL_QUESTIONS), "PreSecond-MBR")
-    schedule.every().day.at(get_utc(13, 43)).do(
+    schedule.every().monday.at(get_utc(13, 43)).do(
         fire_mbr, 2, f"Second signal at {_UK_SECOND} UK time 🔔", "PreSecond-MBR")
-    schedule.every().day.at(get_utc(13, 46)).do(
+    schedule.every().monday.at(get_utc(13, 46)).do(
         fire_mbr, 1, random.choice(PRE_SIGNAL_CONFIRMS), "PreSecond-MBR")
 
     # ── Post-second-signal reactions (2:02–2:08 PM WAT) ──────────────────────
