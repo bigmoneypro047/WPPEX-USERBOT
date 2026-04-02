@@ -1,12 +1,12 @@
 import asyncio
 import os
 import logging
-from datetime import datetime, time
+from datetime import datetime
 import pytz
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError
 import schedule
-import time as time_module
 
 logging.basicConfig(
     level=logging.INFO,
@@ -16,10 +16,17 @@ logger = logging.getLogger(__name__)
 
 API_ID = int(os.environ["TELEGRAM_API_ID"])
 API_HASH = os.environ["TELEGRAM_API_HASH"]
-PHONE = os.environ["TELEGRAM_PHONE"]
 GROUP_1 = os.environ["TELEGRAM_GROUP_1"]
 GROUP_2 = os.environ["TELEGRAM_GROUP_2"]
 GROUP_3 = os.environ["TELEGRAM_GROUP_3"]
+SESSION_STRING = os.environ.get("TELEGRAM_SESSION_STRING", "")
+
+if not SESSION_STRING:
+    raise RuntimeError(
+        "TELEGRAM_SESSION_STRING is not set. "
+        "Run generate_session.py on your local machine first to get your session string, "
+        "then add it as an environment variable on Render."
+    )
 
 NIGERIA_TZ = pytz.timezone("Africa/Lagos")
 
@@ -76,7 +83,7 @@ MSG_200PM = (
 
 GROUPS = [GROUP_1, GROUP_2, GROUP_3]
 
-client = TelegramClient("wppex_session", API_ID, API_HASH)
+client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 
 async def send_to_all_groups(message: str, session_name: str):
@@ -84,74 +91,76 @@ async def send_to_all_groups(message: str, session_name: str):
     for group in GROUPS:
         try:
             await client.send_message(group, message, parse_mode="md")
-            logger.info(f"[{session_name}] Sent to {group}")
+            logger.info(f"[{session_name}] ✓ Sent to {group}")
             await asyncio.sleep(2)
         except FloodWaitError as e:
-            logger.warning(f"[{session_name}] FloodWait for {e.seconds}s on {group}")
+            logger.warning(f"[{session_name}] FloodWait {e.seconds}s on {group}, retrying...")
             await asyncio.sleep(e.seconds)
             await client.send_message(group, message, parse_mode="md")
+            logger.info(f"[{session_name}] ✓ Sent to {group} after wait")
         except Exception as e:
-            logger.error(f"[{session_name}] Failed to send to {group}: {e}")
+            logger.error(f"[{session_name}] ✗ Failed to send to {group}: {e}")
 
 
-def run_async(coro):
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(coro)
+def run_job(coro_func, *args):
+    asyncio.get_event_loop().run_until_complete(coro_func(*args))
 
 
 def job_350am():
-    run_async(send_to_all_groups(MSG_350AM, "Extra Signal"))
+    run_job(send_to_all_groups, MSG_350AM, "Extra Signal")
 
 
 def job_400am():
-    run_async(send_to_all_groups(MSG_400AM, "Extra Signal"))
+    run_job(send_to_all_groups, MSG_400AM, "Extra Signal")
 
 
 def job_1150am():
-    run_async(send_to_all_groups(MSG_1150AM, "First Basic Signal"))
+    run_job(send_to_all_groups, MSG_1150AM, "First Basic Signal")
 
 
 def job_1200pm():
-    run_async(send_to_all_groups(MSG_1200PM, "First Basic Signal"))
+    run_job(send_to_all_groups, MSG_1200PM, "First Basic Signal")
 
 
 def job_150pm():
-    run_async(send_to_all_groups(MSG_150PM, "Second Basic Signal"))
+    run_job(send_to_all_groups, MSG_150PM, "Second Basic Signal")
 
 
 def job_200pm():
-    run_async(send_to_all_groups(MSG_200PM, "Second Basic Signal"))
+    run_job(send_to_all_groups, MSG_200PM, "Second Basic Signal")
 
 
-def get_nigeria_time_utc(h, m):
-    """Return UTC HH:MM string for a given Nigeria time HH:MM."""
-    nigeria_now = datetime.now(NIGERIA_TZ)
-    nigeria_target = nigeria_now.replace(hour=h, minute=m, second=0, microsecond=0)
-    utc_target = nigeria_target.astimezone(pytz.utc)
-    return utc_target.strftime("%H:%M")
+def get_utc_time(nigeria_hour: int, nigeria_minute: int) -> str:
+    now = datetime.now(NIGERIA_TZ)
+    target = now.replace(hour=nigeria_hour, minute=nigeria_minute, second=0, microsecond=0)
+    utc = target.astimezone(pytz.utc)
+    return utc.strftime("%H:%M")
 
 
 def setup_schedule():
-    schedule.every().day.at(get_nigeria_time_utc(3, 50)).do(job_350am)
-    schedule.every().day.at(get_nigeria_time_utc(4, 0)).do(job_400am)
-    schedule.every().day.at(get_nigeria_time_utc(11, 50)).do(job_1150am)
-    schedule.every().day.at(get_nigeria_time_utc(12, 0)).do(job_1200pm)
-    schedule.every().day.at(get_nigeria_time_utc(13, 50)).do(job_150pm)
-    schedule.every().day.at(get_nigeria_time_utc(14, 0)).do(job_200pm)
+    schedule.every().day.at(get_utc_time(3, 50)).do(job_350am)
+    schedule.every().day.at(get_utc_time(4, 0)).do(job_400am)
+    schedule.every().day.at(get_utc_time(11, 50)).do(job_1150am)
+    schedule.every().day.at(get_utc_time(12, 0)).do(job_1200pm)
+    schedule.every().day.at(get_utc_time(13, 50)).do(job_150pm)
+    schedule.every().day.at(get_utc_time(14, 0)).do(job_200pm)
 
-    logger.info("Schedule set (all times in UTC):")
+    logger.info("Scheduled jobs (UTC times):")
     for job in schedule.jobs:
         logger.info(f"  {job}")
 
 
 async def main():
-    logger.info("Starting WPPEX USERBOT...")
-    await client.start(phone=PHONE)
-    logger.info("Telegram client started successfully.")
+    logger.info("=== WPPEX USERBOT STARTING ===")
+    await client.connect()
+    if not await client.is_user_authorized():
+        raise RuntimeError("Telegram session is not authorized. Re-run generate_session.py and update TELEGRAM_SESSION_STRING.")
+    me = await client.get_me()
+    logger.info(f"Logged in as: {me.first_name} (@{me.username}) | Phone: {me.phone}")
 
     setup_schedule()
 
-    logger.info("Scheduler running. Waiting for scheduled times...")
+    logger.info("Scheduler active. Bot is running...")
     while True:
         schedule.run_pending()
         await asyncio.sleep(30)
