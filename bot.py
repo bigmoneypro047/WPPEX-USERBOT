@@ -99,6 +99,57 @@ MSG_200PM = (
     "\U0001f6ab\U0001f6ab\U0001f6abPlease note: All members are strictly prohibited from making private trades at any time!**"
 )
 
+MORNING_GREETINGS = [
+    (
+        "**\U0001f305 Good morning, WPPEX family! \U0001f4aa\n\n"
+        "A brand new day, a brand new opportunity to grow your wealth! \U0001f4b0\n"
+        "Stay focused, stay disciplined, and get ready — signals are loading! \U0001f7e2\n\n"
+        "Wishing everyone a profitable and blessed Monday! \U0001f64f\U0001f525**"
+    ),
+    (
+        "**\U0001f31e Rise and shine, WPPEX warriors! \U0001f6e1\ufe0f\n\n"
+        "Tuesday is here and so is another chance to secure your financial future! \U0001f4c8\n"
+        "Keep your accounts ready, your mind sharp, and your eyes on the signals! \U0001f440\n\n"
+        "Let's make today count — big moves ahead! \U0001f680\U0001f4b8**"
+    ),
+    (
+        "**\U0001f4ab Good morning, champions! \U0001f3c6\n\n"
+        "Wednesday energy is unmatched — we are halfway through the week and the profits keep coming! \U0001f4b5\n"
+        "Open your Wppex accounts, stay alert, and follow every signal with precision! \U0001f3af\n\n"
+        "Today is a great day to win! \U0001f91d\U0001f525**"
+    ),
+    (
+        "**\U0001f303 Good morning, WPPEX community! \U0001f30d\n\n"
+        "Thursday brings new strength and new signals! \U0001f4aa\n"
+        "The market waits for no one — be ready, be fast, and copy every trade on time! \u23f1\ufe0f\U0001f4b9\n\n"
+        "Your financial breakthrough is closer than you think! \U0001f64c\U0001f31f**"
+    ),
+    (
+        "**\U0001f305 Wakey wakey, WPPEX family! \U0001f60a\n\n"
+        "It is Friday and we are ending the week STRONG! \U0001f4aa\U0001f525\n"
+        "Get your accounts loaded and ready — the signals today are going to be powerful! \u26a1\ufe0f\U0001f4b0\n\n"
+        "Stay blessed, stay ready, and let us finish this week in profit! \U0001f64f\U0001f4c8**"
+    ),
+    (
+        "**\U0001f31f Good morning, WPPEX traders! \U0001f30a\n\n"
+        "Saturday means the hustle never stops for those who want real financial freedom! \U0001f5dd\ufe0f\n"
+        "Our professional traders are working hard so you can win — open your app and be prepared! \U0001f4f2\U0001f4b8\n\n"
+        "Grateful for this community — let us grow together today! \U0001f91d\U0001f305**"
+    ),
+    (
+        "**\U0001f64f Good morning and happy Sunday, WPPEX family! \u2728\n\n"
+        "Even on Sunday, we work because financial freedom does not take days off! \U0001f4aa\U0001f4b0\n"
+        "Rest your body but keep your Wppex account active and ready for today's signals! \U0001f7e2\U0001f4f2\n\n"
+        "May this week bring everyone massive profits and blessings! \U0001f31f\U0001f64c**"
+    ),
+]
+
+
+def get_morning_greeting() -> str:
+    day_index = datetime.now(NIGERIA_TZ).weekday()
+    return MORNING_GREETINGS[day_index]
+
+
 STYLE = """
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -198,6 +249,7 @@ RUNNING_PAGE = STYLE + """
   <div class="success"><span class="status-dot"></span>Bot is active and sending messages on schedule</div>
   <p style="margin-top:16px"><strong>Daily Schedule (Nigeria Time / WAT)</strong></p>
   <p style="margin-top:14px; line-height:2.2">
+    🔓 3:00 AM — Groups unlocked + daily greeting sent<br>
     🔒 3:30 AM — Groups locked<br>
     3:50 AM — Extra Signal warning<br>
     4:00 AM — Extra Signal instructions<br>
@@ -209,7 +261,8 @@ RUNNING_PAGE = STYLE + """
     🔒 1:30 PM — Groups locked<br>
     1:50 PM — Second Signal warning<br>
     2:00 PM — Second Signal instructions<br>
-    🔓 2:05 PM — Groups unlocked
+    🔓 2:05 PM — Groups unlocked<br><br>
+    🔒 5:00 PM — Groups locked for the night
   </p>
 </div>
 """
@@ -359,6 +412,23 @@ def fire_unlock(label):
     asyncio.run_coroutine_threadsafe(unlock_all_groups(label), _loop)
 
 
+async def morning_unlock_with_greeting():
+    await unlock_all_groups("Morning Unlock")
+    greeting = get_morning_greeting()
+    await asyncio.sleep(2)
+    for group in GROUPS:
+        try:
+            await bot_client.send_message(group, greeting, parse_mode="md")
+            logger.info(f"[Morning Unlock] ✓ Greeting sent to {group}")
+            await asyncio.sleep(2)
+        except Exception as e:
+            logger.error(f"[Morning Unlock] ✗ {group}: {e}")
+
+
+def fire_morning_unlock():
+    asyncio.run_coroutine_threadsafe(morning_unlock_with_greeting(), _loop)
+
+
 def get_utc(nigeria_h, nigeria_m):
     now = datetime.now(NIGERIA_TZ)
     target = now.replace(hour=nigeria_h, minute=nigeria_m, second=0, microsecond=0)
@@ -366,6 +436,9 @@ def get_utc(nigeria_h, nigeria_m):
 
 
 def run_scheduler():
+    # ── Morning unlock + greeting ────────────────────────────
+    schedule.every().day.at(get_utc(3,  0)).do(fire_morning_unlock)
+
     # ── Session 1: Extra Signal ─────────────────────────────
     schedule.every().day.at(get_utc(3, 30)).do(fire_lock,   "Extra Signal")
     schedule.every().day.at(get_utc(3, 50)).do(fire_job,    MSG_350AM, "Extra Signal")
@@ -383,6 +456,9 @@ def run_scheduler():
     schedule.every().day.at(get_utc(13, 50)).do(fire_job,    MSG_150PM, "Second Basic Signal")
     schedule.every().day.at(get_utc(14,  0)).do(fire_job,    MSG_200PM, "Second Basic Signal")
     schedule.every().day.at(get_utc(14,  5)).do(fire_unlock, "Second Basic Signal")
+
+    # ── Night lock ───────────────────────────────────────────
+    schedule.every().day.at(get_utc(17, 0)).do(fire_lock, "Night Lock")
 
     logger.info("Scheduler active. Full daily schedule (UTC):")
     for job in schedule.jobs:
