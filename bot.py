@@ -1732,43 +1732,73 @@ async def start_bot():
     # ── Link-deletion guard ───────────────────────────────────────────────────
     group_ids = [g.id for g in GROUPS]
 
+    # Words that accuse or attack the group — deleted from regular members
+    BAD_KEYWORDS = [
+        "scam", "scammer", "scammers", "scamming",
+        "fraud", "fraudster", "fraudulent", "fraudsters",
+        "fake", "faker",
+        "liar", "liars", "lie", "lies", "lying",
+        "cheat", "cheating", "cheater", "cheaters", "cheated",
+        "thief", "thieves", "steal", "stealing", "stolen",
+        "ponzi", "419",
+        "illegal", "dubious",
+        "they will run", "will disappear", "run away with your",
+        "don't invest", "do not invest", "don't send", "do not send",
+        "beware", "be warned", "warning this",
+    ]
+
+    import re as _re
+
     @bot_client.on(events.NewMessage(chats=group_ids, incoming=True))
-    async def delete_links(event):
-        """Delete any message containing a URL/link — unless sent by PROFESSOR or a group admin."""
+    async def moderate_messages(event):
+        """Delete links or accusatory keywords — PROFESSOR and admins are exempt."""
         try:
             sender_id = event.sender_id
-            # Never delete PROFESSOR's own messages
             if sender_id == PROFESSOR_ID:
                 return
-            # Never delete messages from admins/owner
+            # Admins/owner are always exempt
             try:
                 perms = await bot_client.get_permissions(event.chat_id, sender_id)
                 if perms.is_admin or perms.is_creator:
                     return
             except Exception:
-                pass  # If we can't check, proceed with deletion to be safe
+                pass
+
             msg = event.message
+            text = (msg.message or "").lower()
+            reason = None
+
+            # ── Check for links ───────────────────────────────────────────
             has_link = False
-            # Check Telethon entity types (clickable links, t.me/ previews, etc.)
             if msg.entities:
                 for ent in msg.entities:
                     if isinstance(ent, (MessageEntityUrl, MessageEntityTextUrl)):
                         has_link = True
                         break
-            # Fallback: plain-text URL patterns not parsed as entities
-            if not has_link:
-                import re
-                text = msg.message or ""
-                if re.search(r"(https?://|www\.|t\.me/|@\w+\.(?:com|net|org|io))", text, re.IGNORECASE):
-                    has_link = True
-            if not has_link:
+            if not has_link and _re.search(
+                r"(https?://|www\.|t\.me/|@\w+\.(?:com|net|org|io))", text, _re.IGNORECASE
+            ):
+                has_link = True
+            if has_link:
+                reason = "link"
+
+            # ── Check for bad keywords ────────────────────────────────────
+            if not reason:
+                for kw in BAD_KEYWORDS:
+                    if kw in text:
+                        reason = f"keyword: '{kw}'"
+                        break
+
+            if not reason:
                 return
+
             await msg.delete()
             sender = await event.get_sender()
             name = getattr(sender, 'first_name', str(sender_id)) if sender else str(sender_id)
-            logger.info(f"[LinkGuard] 🗑 Deleted link from '{name}' in '{getattr(event.chat, 'title', event.chat_id)}'")
+            chat_title = getattr(event.chat, 'title', str(event.chat_id))
+            logger.info(f"[Guard] 🗑 Deleted ({reason}) from '{name}' in '{chat_title}'")
         except Exception as exc:
-            logger.error(f"[LinkGuard] Error: {exc}")
+            logger.error(f"[Guard] Error: {exc}")
 
     sched_thread = threading.Thread(target=run_scheduler, daemon=True)
     sched_thread.start()
