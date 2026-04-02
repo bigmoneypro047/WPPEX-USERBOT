@@ -1734,12 +1734,19 @@ async def start_bot():
 
     @bot_client.on(events.NewMessage(chats=group_ids, incoming=True))
     async def delete_links(event):
-        """Delete any message containing a URL/link — unless PROFESSOR sent it."""
+        """Delete any message containing a URL/link — unless sent by PROFESSOR or a group admin."""
         try:
             sender_id = event.sender_id
             # Never delete PROFESSOR's own messages
             if sender_id == PROFESSOR_ID:
                 return
+            # Never delete messages from admins/owner
+            try:
+                perms = await bot_client.get_permissions(event.chat_id, sender_id)
+                if perms.is_admin or perms.is_creator:
+                    return
+            except Exception:
+                pass  # If we can't check, proceed with deletion to be safe
             msg = event.message
             has_link = False
             # Check Telethon entity types (clickable links, t.me/ previews, etc.)
