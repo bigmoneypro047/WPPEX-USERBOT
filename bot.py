@@ -552,28 +552,40 @@ def raw_id(val: str) -> int:
 
 
 async def resolve_groups():
-    """Resolve all 3 group entities using get_entity with the correct -100 prefix."""
+    """
+    Fetch all account dialogs and match against the configured group IDs.
+    This is the most reliable method — avoids get_entity() cache issues entirely.
+    """
     global GROUPS
     GROUPS.clear()
+
+    # Build a set of target IDs.
+    # Env vars hold the raw positive channel ID (e.g. 1003257839303).
+    # Telethon's dialog.entity.id also returns the raw positive ID, so match directly.
+    target_ids = {}
     for raw in RAW_GROUPS:
-        raw = raw.strip()
-        label = raw
-        try:
-            n = int(raw)
-            # Supergroup/channel IDs need the -100 prefix for the MTProto API
-            peer_id = int(f"-100{abs(n)}") if n > 0 else n
-            entity = await bot_client.get_entity(peer_id)
-            GROUPS.append(entity)
-            logger.info(f"[Startup] ✓ Resolved '{entity.title}' (raw={raw}, peer={peer_id})")
-        except Exception as e:
-            # Fallback: try raw value as-is (e.g. username or already negative ID)
-            try:
-                entity = await bot_client.get_entity(raw)
-                GROUPS.append(entity)
-                logger.info(f"[Startup] ✓ Resolved '{entity.title}' via fallback (raw={raw})")
-            except Exception as e2:
-                logger.error(f"[Startup] ✗ Could not resolve group '{label}': {type(e).__name__}: {e} | fallback: {e2}")
-    logger.info(f"[Startup] {len(GROUPS)}/3 groups ready for lock/unlock/send.")
+        n = abs(int(raw.strip()))
+        target_ids[n] = raw.strip()
+    logger.info(f"[Startup] Looking for group IDs: {list(target_ids.keys())}")
+
+    found = {}
+    logger.info("[Startup] Scanning all account dialogs...")
+    async for dialog in bot_client.iter_dialogs():
+        eid = getattr(dialog.entity, 'id', None)
+        if eid in target_ids:
+            found[eid] = dialog.entity
+            logger.info(f"[Startup] ✓ Found group: '{dialog.title}' (id={eid})")
+        if len(found) == len(target_ids):
+            break
+
+    for n, raw in target_ids.items():
+        if n in found:
+            GROUPS.append(found[n])
+        else:
+            logger.error(f"[Startup] ✗ Group {raw} (id={n}) not found — "
+                         f"is @cardon_js a member of this group?")
+
+    logger.info(f"[Startup] {len(GROUPS)}/3 groups ready.")
 
 
 async def start_bot():
@@ -585,11 +597,6 @@ async def start_bot():
         return
     me = await bot_client.get_me()
     logger.info(f"=== PROFESSOR online as: {me.first_name} (@{me.username}) ===")
-
-    # Pre-populate the entity cache — required for StringSession to resolve groups
-    logger.info("[Startup] Loading dialogs to populate entity cache...")
-    await bot_client.get_dialogs(limit=None)
-    logger.info("[Startup] Entity cache ready. Resolving groups...")
 
     await resolve_groups()
 
