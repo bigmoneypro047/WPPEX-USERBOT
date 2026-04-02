@@ -851,6 +851,91 @@ GENERAL_MSGS = [
     "Grateful to be part of this community 🙏",
 ]
 
+PROMO_THREADS = [
+    # Copy trading vs 9-5 job
+    [
+        (0, "Honestly, copy trading has changed my life 🙏 No more 9-5 stress"),
+        (2, "Same! I just follow professor's signals and the money comes in consistently 💰"),
+        (1, "It's the smartest passive income strategy I've ever come across 📈"),
+        (3, "And you can do it from home, from anywhere 🏠 Total freedom"),
+    ],
+    # Crypto prices and liquidity
+    [
+        (1, "Crypto market is looking really strong right now 🚀 Great time to be in this group"),
+        (3, "Liquidity is high, perfect conditions for copy trading 📊"),
+        (0, "When liquidity is strong professor's signals are even more accurate 🎯"),
+        (2, "Exactly why I always follow every signal without missing 💪"),
+    ],
+    # QT Investment Group opportunity
+    [
+        (2, "Joining QT Investment Group is honestly the best decision I've made this year 🙌"),
+        (0, "The opportunity here is real — consistent daily signals and real profits 📈"),
+        (3, "Professor has never missed a day, always showing up for us 💯"),
+        (1, "That consistency and dedication is what makes this group different 🔥"),
+    ],
+    # Referral rewards
+    [
+        (3, "Has anyone here taken advantage of the referral rewards yet? 👀"),
+        (1, "Yes! I brought in 3 friends last month and the rewards are real 💰"),
+        (0, "Referrals give you extra income on top of your copy trading profits 📊"),
+        (2, "The more people you bring in the more everyone earns 🙏💪"),
+    ],
+    # Team formation
+    [
+        (0, "Building a team inside QT is the fastest way to grow your income 💰"),
+        (2, "When your team copies trades you earn from their volume too 📈"),
+        (1, "That's the power of team formation — compound income every day 🔥"),
+        (3, "This is why I tell everyone I know to join this group ASAP 💪"),
+    ],
+    # Stable income from copy trading
+    [
+        (1, "Copy trading gives you stable income unlike a normal salary job 📊"),
+        (3, "The market is open 24/7 and signals come in daily 🌍"),
+        (0, "With professor's accuracy the risk is very low and returns are consistent 🙏"),
+        (2, "Best stable online income I've ever found — and I've tried many things 💯"),
+    ],
+    # Forex trading signals
+    [
+        (2, "Forex market is moving really well this week 📈 Great liquidity"),
+        (0, "Professor covers both crypto and forex — double opportunity every day 💪"),
+        (3, "Two markets, two income streams, one professor 🔥 That's value"),
+        (1, "Once you understand the signals it becomes second nature 🎯"),
+    ],
+    # Copy trading simplicity
+    [
+        (3, "What I love most about copy trading is how simple it really is 😊"),
+        (1, "You don't need to know charts or technical analysis — just follow professor 📱"),
+        (0, "See the signal → copy the trade → wait for profits ✅ That's literally it"),
+        (2, "Meanwhile people are stuck in traffic going to 9-5 jobs 😂 We chose right 💰"),
+    ],
+    # Rising crypto prices
+    [
+        (0, "Crypto prices rising across the board this week 📈 Great time to be trading"),
+        (3, "Professor always positions us perfectly before the big moves 🎯"),
+        (1, "That's real skill — reading the market and giving us the right entry 🔥"),
+        (2, "Following these signals has genuinely improved my financial situation 🙏"),
+    ],
+    # Income without leaving home
+    [
+        (1, "The fact that I can earn from home without a boss is still unreal to me 🏠💰"),
+        (0, "Copy trading makes that possible — work on your own terms 📊"),
+        (3, "I used to spend 2 hours commuting daily, now that time is profit time 😂"),
+        (2, "QT Investment Group gave me a different perspective on earning income 🙌"),
+    ],
+]
+
+async def _fire_promo_thread(thread: list):
+    """Send a promo conversation thread with natural delays between messages."""
+    for bot_idx, msg in thread:
+        await _mbr_send(bot_idx, msg, "Promo-MBR")
+        await asyncio.sleep(random.uniform(100, 200))  # ~2-3 mins between each message
+
+def fire_promo():
+    """Pick a random promo thread and fire it."""
+    thread = random.choice(PROMO_THREADS)
+    asyncio.run_coroutine_threadsafe(_fire_promo_thread(thread), _loop)
+
+
 PROF_MORNING_REPLIES = [
     "Good morning professor 🙏",
     "Welcome professor! 🌅",
@@ -1137,6 +1222,16 @@ def run_scheduler():
     schedule.every().day.at(get_utc(14, 10)).do(fire_mbr, 2, random.choice(DONE_MSGS), "Done-Second-MBR")
     schedule.every().day.at(get_utc(14, 11)).do(fire_mbr, 3, random.choice(DONE_MSGS), "Done-Second-MBR")
     schedule.every().day.at(get_utc(14, 11)).do(fire_mbr, 0, random.choice(DONE_MSGS), "Done-Second-MBR")
+
+    # ── Promo conversations — 30 mins after each group unlock ─────────────────
+    # Morning window opens 3:00 AM → promo at 3:15 (before 3:28 "ready" msgs)
+    schedule.every().day.at(get_utc(3,  15)).do(fire_promo)
+    # After extra signal unlock (4:05 AM) → promo at 4:35 AM
+    schedule.every().day.at(get_utc(4,  35)).do(fire_promo)
+    # After first signal unlock (12:05 PM) → promo at 12:35 PM
+    schedule.every().day.at(get_utc(12, 35)).do(fire_promo)
+    # After second signal unlock (14:05 PM) → promo at 14:35 PM
+    schedule.every().day.at(get_utc(14, 35)).do(fire_promo)
 
     # ── Afternoon general chat ────────────────────────────────────────────────
     schedule.every().day.at(get_utc(15, 30)).do(fire_mbr, 1, random.choice(GENERAL_MSGS), "General-MBR")
