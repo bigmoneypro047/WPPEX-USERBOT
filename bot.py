@@ -2,6 +2,7 @@ import asyncio
 import os
 import logging
 import threading
+import random
 from concurrent.futures import Future
 from datetime import datetime
 import urllib.request
@@ -33,6 +34,19 @@ GROUPS = []          # filled with resolved InputPeerChannel objects at startup
 
 TEST_GROUP_RAW = "-1003814574407"   # dedicated test group — test-send goes here only
 TEST_GROUP = None   # filled at startup
+
+# ── Member bots (4 accounts that chat in the groups to keep them active) ─────
+MEMBER_SESSIONS_RAW = [
+    os.environ.get("MEMBER_SESSION_1", ""),
+    os.environ.get("MEMBER_SESSION_2", ""),
+    os.environ.get("MEMBER_SESSION_3", ""),
+    os.environ.get("MEMBER_SESSION_4", ""),
+]
+MEMBER_CLIENTS = []  # list of (TelegramClient, [group_entities]) tuples
+
+# ── Member setup flow state ───────────────────────────────────────────────────
+_member_setup_client = None
+_member_phone_code_hash = None
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET
@@ -358,6 +372,147 @@ def test_send():
         return "❌ No groups resolved yet — check Render logs for startup errors.", 400
 
 
+@app.route("/member-setup")
+def member_setup():
+    configured = sum(1 for s in MEMBER_SESSIONS_RAW if s.strip())
+    connected  = len(MEMBER_CLIENTS)
+    return render_template_string("""<!DOCTYPE html>
+<html><head><title>Member Bot Setup</title>
+<style>body{font-family:sans-serif;max-width:480px;margin:40px auto;padding:20px}
+input{width:100%;padding:10px;margin:8px 0;box-sizing:border-box;border:1px solid #ccc;border-radius:6px}
+button{width:100%;padding:12px;background:#2196F3;color:#fff;border:none;border-radius:6px;font-size:16px;cursor:pointer}
+.info{background:#e8f5e9;padding:12px;border-radius:6px;margin-bottom:16px;font-size:14px}
+.warn{background:#fff3e0;padding:12px;border-radius:6px;margin-bottom:16px;font-size:14px}
+</style></head><body>
+<h2>🤖 Member Bot Login</h2>
+<div class="info">
+  Sessions configured: <b>{{ configured }}/4</b><br>
+  Member bots connected: <b>{{ connected }}/4</b>
+</div>
+<div class="warn">Enter the phone number for one of the 4 member accounts.<br>
+After logging in you will get a session string — copy it and add it to Render as
+<b>MEMBER_SESSION_1</b>, <b>MEMBER_SESSION_2</b>, etc.</div>
+{% if error %}<p style="color:red">{{ error }}</p>{% endif %}
+<form method="POST" action="/member-setup/send-code">
+  <input name="phone" type="tel" placeholder="+447911123456" required>
+  <button type="submit">Send Login Code</button>
+</form>
+</body></html>""", configured=configured, connected=connected, error=None)
+
+
+@app.route("/member-setup/send-code", methods=["POST"])
+def member_send_code():
+    global _member_setup_client, _member_phone_code_hash
+    phone = request.form.get("phone", "").strip()
+    if not phone:
+        return "Phone number required.", 400
+
+    async def _send():
+        global _member_setup_client, _member_phone_code_hash
+        _member_setup_client = TelegramClient(StringSession(), API_ID, API_HASH)
+        await _member_setup_client.connect()
+        result = await _member_setup_client.send_code_request(phone)
+        _member_phone_code_hash = result.phone_code_hash
+
+    try:
+        fut = asyncio.run_coroutine_threadsafe(_send(), _loop)
+        fut.result(timeout=20)
+        session["member_phone"] = phone
+    except Exception as e:
+        return f"Error sending code: {e}", 500
+
+    return render_template_string("""<!DOCTYPE html>
+<html><head><title>Member Bot — Verify Code</title>
+<style>body{font-family:sans-serif;max-width:480px;margin:40px auto;padding:20px}
+input{width:100%;padding:10px;margin:8px 0;box-sizing:border-box;border:1px solid #ccc;border-radius:6px}
+button{width:100%;padding:12px;background:#4caf50;color:#fff;border:none;border-radius:6px;font-size:16px;cursor:pointer}
+</style></head><body>
+<h2>📲 Enter the code sent to {{ phone }}</h2>
+{% if error %}<p style="color:red">{{ error }}</p>{% endif %}
+<form method="POST" action="/member-setup/verify-code">
+  <input name="code" type="text" placeholder="12345" required>
+  <button type="submit">Verify Code</button>
+</form>
+</body></html>""", phone=phone, error=None)
+
+
+@app.route("/member-setup/verify-code", methods=["POST"])
+def member_verify_code():
+    global _member_setup_client, _member_phone_code_hash
+    code = request.form.get("code", "").strip()
+    phone = session.get("member_phone", "")
+
+    async def _verify():
+        await _member_setup_client.sign_in(phone, code, phone_code_hash=_member_phone_code_hash)
+        return _member_setup_client.session.save()
+
+    try:
+        fut = asyncio.run_coroutine_threadsafe(_verify(), _loop)
+        sess_str = fut.result(timeout=20)
+    except SessionPasswordNeededError:
+        return render_template_string("""<!DOCTYPE html>
+<html><head><title>2FA Required</title>
+<style>body{font-family:sans-serif;max-width:480px;margin:40px auto;padding:20px}
+input{width:100%;padding:10px;margin:8px 0;box-sizing:border-box;border:1px solid #ccc;border-radius:6px}
+button{width:100%;padding:12px;background:#ff9800;color:#fff;border:none;border-radius:6px;font-size:16px;cursor:pointer}
+</style></head><body>
+<h2>🔐 Two-Factor Authentication</h2>
+<form method="POST" action="/member-setup/verify-password">
+  <input name="password" type="password" placeholder="Your 2FA password">
+  <button type="submit">Submit</button>
+</form></body></html>""")
+    except Exception as e:
+        return f"Verification failed: {e}", 500
+
+    next_slot = sum(1 for s in MEMBER_SESSIONS_RAW if s.strip()) + 1
+    return render_template_string("""<!DOCTYPE html>
+<html><head><title>Member Session Ready</title>
+<style>body{font-family:sans-serif;max-width:540px;margin:40px auto;padding:20px}
+textarea{width:100%;height:100px;padding:10px;font-family:monospace;font-size:12px;box-sizing:border-box}
+.box{background:#e8f5e9;padding:16px;border-radius:8px;margin-top:16px}
+</style></head><body>
+<h2>✅ Session generated!</h2>
+<div class="box">
+  <b>Copy this session string and add it to Render as<br>
+  MEMBER_SESSION_{{ slot }}</b><br><br>
+  <textarea readonly>{{ sess }}</textarea>
+</div>
+<p>After adding it to Render, redeploy and the member bot will connect automatically.</p>
+<p><a href="/member-setup">← Set up another member bot</a></p>
+</body></html>""", sess=sess_str, slot=next_slot)
+
+
+@app.route("/member-setup/verify-password", methods=["POST"])
+def member_verify_password():
+    global _member_setup_client
+    password = request.form.get("password", "")
+
+    async def _2fa():
+        await _member_setup_client.sign_in(password=password)
+        return _member_setup_client.session.save()
+
+    try:
+        fut = asyncio.run_coroutine_threadsafe(_2fa(), _loop)
+        sess_str = fut.result(timeout=20)
+    except Exception as e:
+        return f"2FA failed: {e}", 500
+
+    next_slot = sum(1 for s in MEMBER_SESSIONS_RAW if s.strip()) + 1
+    return render_template_string("""<!DOCTYPE html>
+<html><head><title>Member Session Ready</title>
+<style>body{font-family:sans-serif;max-width:540px;margin:40px auto;padding:20px}
+textarea{width:100%;height:100px;padding:10px;font-family:monospace;font-size:12px;box-sizing:border-box}
+.box{background:#e8f5e9;padding:16px;border-radius:8px;margin-top:16px}
+</style></head><body>
+<h2>✅ Session generated!</h2>
+<div class="box">
+  <b>Copy this and add to Render as MEMBER_SESSION_{{ slot }}</b><br><br>
+  <textarea readonly>{{ sess }}</textarea>
+</div>
+<p><a href="/member-setup">← Set up another member bot</a></p>
+</body></html>""", sess=sess_str, slot=next_slot)
+
+
 @app.route("/")
 def index():
     if SESSION_STRING:
@@ -571,6 +726,137 @@ async def catch_up_on_startup():
             logger.error(f"[CatchUp] ✗ {label}: {e}")
 
 
+# ── UK time helper & member bot message bank ─────────────────────────────────
+
+def uk_time_str(wat_h: int, wat_m: int) -> str:
+    """Convert WAT (UTC+1) to UK GMT (UTC+0) display string."""
+    total = wat_h * 60 + wat_m - 60
+    if total < 0:
+        total += 1440
+    h, m = divmod(total, 60)
+    period = "AM" if h < 12 else "PM"
+    h12 = h % 12 or 12
+    return f"{h12}:{m:02d} {period}"
+
+
+# Pre-computed signal times in UK format
+_UK_EXTRA  = uk_time_str(4,  0)   # "3:00 AM"
+_UK_FIRST  = uk_time_str(12, 0)   # "11:00 AM"
+_UK_SECOND = uk_time_str(14, 0)   # "1:00 PM"
+
+MORNING_MSGS = [
+    "Good morning everyone 🌅",
+    "GM all! Ready for today's trades 💪",
+    "Morning 👋 hope everyone's accounts are ready",
+    "Good morning professor and everyone 🙏",
+    "Rise and shine traders! Let's make today count 🌞",
+]
+
+PRE_SIGNAL_QUESTIONS = [
+    "When is the next signal today?",
+    "Anyone know what time the signal is?",
+    "What time is today's signal please?",
+    "Is there a signal coming up soon?",
+]
+
+PRE_SIGNAL_CONFIRMS = [
+    "Thanks! Getting my account ready 👀",
+    "Perfect, I'll be ready 💪",
+    "Got it! Preparing now 🙏",
+    "Great thanks! Setting up my account ✅",
+]
+
+SIGNAL_REACTIONS = [
+    "Copying now! 🚀",
+    "Order placed ✅",
+    "Great signal professor! 🔥",
+    "Trade placed 👌 Let's go!",
+    "Done! Let's get these profits 💰",
+    "Copied! 🙌",
+    "Let's go! 📈",
+    "In the trade! 💯",
+    "Signal copied ✅🚀",
+    "Thanks professor! Trade is live 🔥",
+]
+
+GENERAL_MSGS = [
+    "This group has been amazing for my trading 🙏",
+    "Making consistent profits thanks to professor 📈",
+    "Best trading group I've been in 💯",
+    "Results have been great this week 📊",
+    "Professor's signals are so accurate 🎯",
+    "So glad I joined this group 🙌",
+    "Making good returns since I joined 💰",
+    "Grateful to be part of this community 🙏",
+]
+
+
+async def _resolve_member_groups(client) -> list:
+    """Scan dialogs for a member bot client and return the 3 main group entities."""
+    target_ids = {_bare_id(r): r.strip() for r in RAW_GROUPS}
+    found = {}
+    for folder in (0, 1):
+        if len(found) == len(target_ids):
+            break
+        try:
+            async for dialog in client.iter_dialogs(folder=folder):
+                eid = getattr(dialog.entity, 'id', None)
+                if eid is not None and eid in target_ids:
+                    found[eid] = dialog.entity
+                if len(found) == len(target_ids):
+                    break
+        except Exception:
+            pass
+    return [found[n] for n in target_ids if n in found]
+
+
+async def start_member_bots():
+    """Connect all 4 member bots that have a session string configured."""
+    global MEMBER_CLIENTS
+    MEMBER_CLIENTS.clear()
+    for idx, sess in enumerate(MEMBER_SESSIONS_RAW):
+        if not sess.strip():
+            logger.info(f"[MemberBot {idx+1}] No session — skipping.")
+            continue
+        try:
+            client = TelegramClient(StringSession(sess.strip()), API_ID, API_HASH)
+            await client.connect()
+            if not await client.is_user_authorized():
+                logger.warning(f"[MemberBot {idx+1}] Session not authorised — skipping.")
+                continue
+            me = await client.get_me()
+            logger.info(f"[MemberBot {idx+1}] Connected as {me.first_name} (@{me.username})")
+            groups = await _resolve_member_groups(client)
+            logger.info(f"[MemberBot {idx+1}] {len(groups)}/3 groups resolved.")
+            MEMBER_CLIENTS.append((client, groups))
+        except Exception as e:
+            logger.error(f"[MemberBot {idx+1}] Failed to start: {e}")
+    logger.info(f"[MemberBots] {len(MEMBER_CLIENTS)}/4 member bot(s) ready.")
+
+
+async def _mbr_send(bot_idx: int, msg: str, label: str):
+    """Send a message from member bot at bot_idx (0-based) to all 3 main groups."""
+    if not MEMBER_CLIENTS:
+        logger.warning(f"[{label}] No member bots connected yet.")
+        return
+    idx = bot_idx % len(MEMBER_CLIENTS)
+    client, groups = MEMBER_CLIENTS[idx]
+    for g in groups:
+        try:
+            await client.send_message(g, msg)
+            logger.info(f"[{label}] ✓ Bot{idx+1} → '{getattr(g, 'title', g.id)}'")
+            await asyncio.sleep(2)
+        except FloodWaitError as e:
+            await asyncio.sleep(e.seconds)
+            await client.send_message(g, msg)
+        except Exception as e:
+            logger.error(f"[{label}] ✗ Bot{idx+1}: {e}")
+
+
+def fire_mbr(bot_idx: int, msg: str, label: str):
+    asyncio.run_coroutine_threadsafe(_mbr_send(bot_idx, msg, label), _loop)
+
+
 def run_scheduler():
     # ── Morning unlock + greeting ────────────────────────────
     schedule.every().day.at(get_utc(3,  0)).do(fire_morning_unlock)
@@ -595,6 +881,57 @@ def run_scheduler():
 
     # ── Night lock ───────────────────────────────────────────
     schedule.every().day.at(get_utc(17, 0)).do(fire_lock, "Night Lock")
+
+    # ── Member bot activity — morning greetings (3:05–3:12 AM WAT) ───────────
+    schedule.every().day.at(get_utc(3,  5)).do(fire_mbr, 0, random.choice(MORNING_MSGS), "Morning-MBR")
+    schedule.every().day.at(get_utc(3,  8)).do(fire_mbr, 1, random.choice(MORNING_MSGS), "Morning-MBR")
+    schedule.every().day.at(get_utc(3, 12)).do(fire_mbr, 2, random.choice(MORNING_MSGS), "Morning-MBR")
+
+    # ── Pre-extra-signal chat (3:46–3:49 AM WAT, signal at 4:00 AM) ──────────
+    schedule.every().day.at(get_utc(3, 46)).do(
+        fire_mbr, 3, random.choice(PRE_SIGNAL_QUESTIONS), "PreExtra-MBR")
+    schedule.every().day.at(get_utc(3, 47)).do(
+        fire_mbr, 0, f"Next signal is at {_UK_EXTRA} UK time 🔔", "PreExtra-MBR")
+    schedule.every().day.at(get_utc(3, 49)).do(
+        fire_mbr, 1, random.choice(PRE_SIGNAL_CONFIRMS), "PreExtra-MBR")
+
+    # ── Post-extra-signal reactions (4:02–4:08 AM WAT) ───────────────────────
+    schedule.every().day.at(get_utc(4,  2)).do(fire_mbr, 2, random.choice(SIGNAL_REACTIONS), "PostExtra-MBR")
+    schedule.every().day.at(get_utc(4,  4)).do(fire_mbr, 3, random.choice(SIGNAL_REACTIONS), "PostExtra-MBR")
+    schedule.every().day.at(get_utc(4,  8)).do(fire_mbr, 0, random.choice(SIGNAL_REACTIONS), "PostExtra-MBR")
+
+    # ── General midday chat ───────────────────────────────────────────────────
+    schedule.every().day.at(get_utc(8,  0)).do(fire_mbr, 1, random.choice(GENERAL_MSGS), "General-MBR")
+    schedule.every().day.at(get_utc(10, 30)).do(fire_mbr, 3, random.choice(GENERAL_MSGS), "General-MBR")
+
+    # ── Pre-first-signal chat (11:41–11:46 AM WAT, signal at 12:00 PM) ───────
+    schedule.every().day.at(get_utc(11, 41)).do(
+        fire_mbr, 1, random.choice(PRE_SIGNAL_QUESTIONS), "PreFirst-MBR")
+    schedule.every().day.at(get_utc(11, 43)).do(
+        fire_mbr, 3, f"Signal at {_UK_FIRST} UK time today 🔔", "PreFirst-MBR")
+    schedule.every().day.at(get_utc(11, 46)).do(
+        fire_mbr, 0, random.choice(PRE_SIGNAL_CONFIRMS), "PreFirst-MBR")
+
+    # ── Post-first-signal reactions (12:02–12:08 PM WAT) ─────────────────────
+    schedule.every().day.at(get_utc(12,  2)).do(fire_mbr, 2, random.choice(SIGNAL_REACTIONS), "PostFirst-MBR")
+    schedule.every().day.at(get_utc(12,  4)).do(fire_mbr, 1, random.choice(SIGNAL_REACTIONS), "PostFirst-MBR")
+    schedule.every().day.at(get_utc(12,  8)).do(fire_mbr, 0, random.choice(SIGNAL_REACTIONS), "PostFirst-MBR")
+
+    # ── Pre-second-signal chat (1:41–1:46 PM WAT, signal at 2:00 PM) ─────────
+    schedule.every().day.at(get_utc(13, 41)).do(
+        fire_mbr, 3, random.choice(PRE_SIGNAL_QUESTIONS), "PreSecond-MBR")
+    schedule.every().day.at(get_utc(13, 43)).do(
+        fire_mbr, 2, f"Second signal at {_UK_SECOND} UK time 🔔", "PreSecond-MBR")
+    schedule.every().day.at(get_utc(13, 46)).do(
+        fire_mbr, 1, random.choice(PRE_SIGNAL_CONFIRMS), "PreSecond-MBR")
+
+    # ── Post-second-signal reactions (2:02–2:08 PM WAT) ──────────────────────
+    schedule.every().day.at(get_utc(14,  2)).do(fire_mbr, 0, random.choice(SIGNAL_REACTIONS), "PostSecond-MBR")
+    schedule.every().day.at(get_utc(14,  4)).do(fire_mbr, 3, random.choice(SIGNAL_REACTIONS), "PostSecond-MBR")
+    schedule.every().day.at(get_utc(14,  8)).do(fire_mbr, 2, random.choice(SIGNAL_REACTIONS), "PostSecond-MBR")
+
+    # ── Afternoon general chat ────────────────────────────────────────────────
+    schedule.every().day.at(get_utc(15, 30)).do(fire_mbr, 1, random.choice(GENERAL_MSGS), "General-MBR")
 
     logger.info("Scheduler active. Full daily schedule (UTC):")
     for job in schedule.jobs:
@@ -706,6 +1043,12 @@ async def start_bot():
     # Quick connectivity test — log group titles
     for g in GROUPS:
         logger.info(f"[Startup] Ready to operate in: '{g.title}'")
+
+    # Start member bots (non-fatal — bot works fine without them)
+    try:
+        await start_member_bots()
+    except Exception as e:
+        logger.error(f"[MemberBots] Startup error: {e}")
 
     # Catch up on any jobs missed while the bot was restarting
     await catch_up_on_startup()
