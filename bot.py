@@ -1,17 +1,16 @@
 import asyncio
 import os
 import logging
+import threading
 from datetime import datetime
+from flask import Flask, request, render_template_string, redirect, url_for, session
 import pytz
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, SessionPasswordNeededError
 import schedule
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 API_ID = int(os.environ["TELEGRAM_API_ID"])
@@ -20,21 +19,22 @@ GROUP_1 = os.environ["TELEGRAM_GROUP_1"]
 GROUP_2 = os.environ["TELEGRAM_GROUP_2"]
 GROUP_3 = os.environ["TELEGRAM_GROUP_3"]
 SESSION_STRING = os.environ.get("TELEGRAM_SESSION_STRING", "")
-
-if not SESSION_STRING:
-    raise RuntimeError(
-        "TELEGRAM_SESSION_STRING is not set. "
-        "Run generate_session.py on your local machine first to get your session string, "
-        "then add it as an environment variable on Render."
-    )
+FLASK_SECRET = os.environ.get("SESSION_SECRET", "wppex-secret-2024")
+PORT = int(os.environ.get("PORT", 10000))
 
 NIGERIA_TZ = pytz.timezone("Africa/Lagos")
+GROUPS = [GROUP_1, GROUP_2, GROUP_3]
+
+app = Flask(__name__)
+app.secret_key = FLASK_SECRET
+
+_tg_client = None
+_phone_code_hash = None
 
 MSG_350AM = (
     "**\U0001fa27 Next, 5 Bonus signals will be released, members, please open your Wppex accounts and prepare to receive the transaction order! "
     "Once the order is received, follow all trades immediately, each trade can only be copied once. \U0001f6a8\U0001f6a8**"
 )
-
 MSG_400AM = (
     "**All 5 Bonus Signals invitation code trading feature is now open, please complete your order as soon as possible!\n\n"
     "Follow the instructions below:\n\n"
@@ -46,12 +46,10 @@ MSG_400AM = (
     "6\ufe0f\u20e3 Wait for the trading result.\n\n"
     "\U0001f6ab\U0001f6ab\U0001f6abPlease note: All members are strictly prohibited from making private trades at any time!**"
 )
-
 MSG_1150AM = (
     "**\U0001fa27 Next, first signal of the day is about to be released, members, please open your Wppex accounts and prepare to receive the transaction order! "
     "Once the order is received, copy the trade immediately . \U0001f6a8\U0001f6a8**"
 )
-
 MSG_1200PM = (
     "**The first signal invitation trading feature is now open, please complete your order as soon as possible!\n\n"
     "Follow the instructions below:\n\n"
@@ -63,12 +61,10 @@ MSG_1200PM = (
     "6\ufe0f\u20e3 Wait for the trading result.\n\n"
     "\U0001f6ab\U0001f6ab\U0001f6abPlease note: All members are strictly prohibited from making private trades at any time!**"
 )
-
 MSG_150PM = (
     "**\U0001fa27 Next, second signal of the day is about to be released, members, please open your Wppex accounts and prepare to receive the transaction order! "
     "Once the order is received, copy the trade immediately . \U0001f6a8\U0001f6a8**"
 )
-
 MSG_200PM = (
     "**The second signal invitation trading feature is now open, please complete your order as soon as possible!\n\n"
     "Follow the instructions below:\n\n"
@@ -81,90 +77,256 @@ MSG_200PM = (
     "\U0001f6ab\U0001f6ab\U0001f6abPlease note: All members are strictly prohibited from making private trades at any time!**"
 )
 
-GROUPS = [GROUP_1, GROUP_2, GROUP_3]
+STYLE = """
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         background: #0d1117; color: #e6edf3; min-height: 100vh;
+         display: flex; align-items: center; justify-content: center; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+          padding: 40px; max-width: 480px; width: 90%; }
+  h1 { font-size: 22px; margin-bottom: 8px; color: #58a6ff; }
+  p { color: #8b949e; font-size: 14px; margin-bottom: 24px; line-height: 1.5; }
+  input { width: 100%; padding: 12px 14px; background: #0d1117;
+          border: 1px solid #30363d; border-radius: 8px; color: #e6edf3;
+          font-size: 16px; margin-bottom: 16px; outline: none; }
+  input:focus { border-color: #58a6ff; }
+  button { width: 100%; padding: 13px; background: #238636; border: none;
+           border-radius: 8px; color: #fff; font-size: 16px; font-weight: 600;
+           cursor: pointer; transition: background 0.2s; }
+  button:hover { background: #2ea043; }
+  .error { background: #3d1a1a; border: 1px solid #f85149; border-radius: 8px;
+           padding: 12px 14px; color: #f85149; font-size: 14px; margin-bottom: 16px; }
+  .success { background: #1a3d2a; border: 1px solid #3fb950; border-radius: 8px;
+             padding: 12px 14px; color: #3fb950; font-size: 14px; margin-bottom: 16px; }
+  .session-box { background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+                 padding: 14px; font-family: monospace; font-size: 11px;
+                 word-break: break-all; color: #79c0ff; margin: 12px 0; }
+  .copy-btn { background: #1f6feb; margin-top: 8px; }
+  .copy-btn:hover { background: #388bfd; }
+  .status-dot { display: inline-block; width: 10px; height: 10px;
+                background: #3fb950; border-radius: 50%; margin-right: 8px; }
+  .logo { font-size: 32px; margin-bottom: 12px; }
+</style>
+"""
 
-client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+PHONE_PAGE = STYLE + """
+<div class="card">
+  <div class="logo">🤖</div>
+  <h1>WPPEX USERBOT Setup</h1>
+  <p>Enter the phone number linked to your Telegram account to get started. You will receive an SMS verification code.</p>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  <form method="POST" action="/send-code">
+    <input type="tel" name="phone" placeholder="+2348012345678" required autofocus>
+    <button type="submit">Send Verification Code →</button>
+  </form>
+</div>
+"""
+
+CODE_PAGE = STYLE + """
+<div class="card">
+  <div class="logo">📱</div>
+  <h1>Enter Verification Code</h1>
+  <p>A code was sent to <strong>{{ phone }}</strong> via Telegram SMS. Enter it below.</p>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  <form method="POST" action="/verify-code">
+    <input type="text" name="code" placeholder="12345" maxlength="10" required autofocus>
+    <input type="hidden" name="phone" value="{{ phone }}">
+    <button type="submit">Verify & Generate Session →</button>
+  </form>
+</div>
+"""
+
+PASSWORD_PAGE = STYLE + """
+<div class="card">
+  <div class="logo">🔐</div>
+  <h1>Two-Step Verification</h1>
+  <p>Your account has 2FA enabled. Enter your Telegram cloud password below.</p>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  <form method="POST" action="/verify-password">
+    <input type="password" name="password" placeholder="Your Telegram password" required autofocus>
+    <button type="submit">Confirm Password →</button>
+  </form>
+</div>
+"""
+
+SESSION_PAGE = STYLE + """
+<div class="card">
+  <div class="logo">✅</div>
+  <h1>Login Successful!</h1>
+  <div class="success">Your session string has been generated successfully.</div>
+  <p>Copy the entire string below, then go to your <strong>Render dashboard</strong> → Environment Variables → add a new variable named <strong>TELEGRAM_SESSION_STRING</strong> and paste it as the value. Then redeploy.</p>
+  <div class="session-box" id="sess">{{ session_string }}</div>
+  <button class="copy-btn" onclick="copy()">📋 Copy Session String</button>
+  <script>
+    function copy() {
+      navigator.clipboard.writeText(document.getElementById('sess').innerText);
+      event.target.innerText = '✅ Copied!';
+      setTimeout(() => event.target.innerText = '📋 Copy Session String', 2000);
+    }
+  </script>
+</div>
+"""
+
+RUNNING_PAGE = STYLE + """
+<div class="card">
+  <div class="logo">🚀</div>
+  <h1>WPPEX USERBOT</h1>
+  <div class="success"><span class="status-dot"></span>Bot is running and sending messages on schedule</div>
+  <p><strong>Daily Schedule (Nigeria Time)</strong></p>
+  <p style="margin-top:14px">
+    3:50 AM — Extra Signal warning<br>
+    4:00 AM — Extra Signal instructions<br><br>
+    11:50 AM — First Signal warning<br>
+    12:00 PM — First Signal instructions<br><br>
+    1:50 PM — Second Signal warning<br>
+    2:00 PM — Second Signal instructions
+  </p>
+</div>
+"""
 
 
-async def send_to_all_groups(message: str, session_name: str):
-    logger.info(f"[{session_name}] Sending message to all groups...")
+def new_client():
+    return TelegramClient(StringSession(), API_ID, API_HASH)
+
+
+@app.route("/")
+def index():
+    if SESSION_STRING:
+        return render_template_string(RUNNING_PAGE)
+    return render_template_string(PHONE_PAGE, error=None)
+
+
+@app.route("/send-code", methods=["POST"])
+def send_code():
+    global _tg_client, _phone_code_hash
+    phone = request.form.get("phone", "").strip()
+    if not phone:
+        return render_template_string(PHONE_PAGE, error="Please enter a phone number.")
+
+    async def do_send():
+        global _tg_client, _phone_code_hash
+        _tg_client = new_client()
+        await _tg_client.connect()
+        result = await _tg_client.send_code_request(phone)
+        _phone_code_hash = result.phone_code_hash
+
+    try:
+        asyncio.get_event_loop().run_until_complete(do_send())
+        session["phone"] = phone
+        return render_template_string(CODE_PAGE, phone=phone, error=None)
+    except Exception as e:
+        logger.error(f"send_code error: {e}")
+        return render_template_string(PHONE_PAGE, error=f"Error: {str(e)}")
+
+
+@app.route("/verify-code", methods=["POST"])
+def verify_code():
+    global _tg_client, _phone_code_hash
+    code = request.form.get("code", "").strip()
+    phone = request.form.get("phone", session.get("phone", "")).strip()
+
+    async def do_verify():
+        await _tg_client.sign_in(phone=phone, code=code, phone_code_hash=_phone_code_hash)
+        return _tg_client.session.save()
+
+    try:
+        sess = asyncio.get_event_loop().run_until_complete(do_verify())
+        return render_template_string(SESSION_PAGE, session_string=sess)
+    except SessionPasswordNeededError:
+        return render_template_string(PASSWORD_PAGE, error=None)
+    except Exception as e:
+        logger.error(f"verify_code error: {e}")
+        return render_template_string(CODE_PAGE, phone=phone, error=f"Invalid code: {str(e)}")
+
+
+@app.route("/verify-password", methods=["POST"])
+def verify_password():
+    global _tg_client
+    password = request.form.get("password", "").strip()
+
+    async def do_2fa():
+        await _tg_client.sign_in(password=password)
+        return _tg_client.session.save()
+
+    try:
+        sess = asyncio.get_event_loop().run_until_complete(do_2fa())
+        return render_template_string(SESSION_PAGE, session_string=sess)
+    except Exception as e:
+        logger.error(f"verify_password error: {e}")
+        return render_template_string(PASSWORD_PAGE, error=f"Wrong password: {str(e)}")
+
+
+bot_client = None
+
+
+async def send_to_all_groups(message: str, label: str):
+    logger.info(f"[{label}] Sending to all groups...")
     for group in GROUPS:
         try:
-            await client.send_message(group, message, parse_mode="md")
-            logger.info(f"[{session_name}] ✓ Sent to {group}")
+            await bot_client.send_message(group, message, parse_mode="md")
+            logger.info(f"[{label}] ✓ Sent to {group}")
             await asyncio.sleep(2)
         except FloodWaitError as e:
-            logger.warning(f"[{session_name}] FloodWait {e.seconds}s on {group}, retrying...")
+            logger.warning(f"[{label}] FloodWait {e.seconds}s, retrying {group}...")
             await asyncio.sleep(e.seconds)
-            await client.send_message(group, message, parse_mode="md")
-            logger.info(f"[{session_name}] ✓ Sent to {group} after wait")
+            await bot_client.send_message(group, message, parse_mode="md")
         except Exception as e:
-            logger.error(f"[{session_name}] ✗ Failed to send to {group}: {e}")
+            logger.error(f"[{label}] ✗ {group}: {e}")
 
 
-def run_job(coro_func, *args):
-    asyncio.get_event_loop().run_until_complete(coro_func(*args))
+def run_job(message, label):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(send_to_all_groups(message, label))
+    loop.close()
 
 
-def job_350am():
-    run_job(send_to_all_groups, MSG_350AM, "Extra Signal")
-
-
-def job_400am():
-    run_job(send_to_all_groups, MSG_400AM, "Extra Signal")
-
-
-def job_1150am():
-    run_job(send_to_all_groups, MSG_1150AM, "First Basic Signal")
-
-
-def job_1200pm():
-    run_job(send_to_all_groups, MSG_1200PM, "First Basic Signal")
-
-
-def job_150pm():
-    run_job(send_to_all_groups, MSG_150PM, "Second Basic Signal")
-
-
-def job_200pm():
-    run_job(send_to_all_groups, MSG_200PM, "Second Basic Signal")
-
-
-def get_utc_time(nigeria_hour: int, nigeria_minute: int) -> str:
+def get_utc(nigeria_h, nigeria_m):
     now = datetime.now(NIGERIA_TZ)
-    target = now.replace(hour=nigeria_hour, minute=nigeria_minute, second=0, microsecond=0)
-    utc = target.astimezone(pytz.utc)
-    return utc.strftime("%H:%M")
+    target = now.replace(hour=nigeria_h, minute=nigeria_m, second=0, microsecond=0)
+    return target.astimezone(pytz.utc).strftime("%H:%M")
 
 
-def setup_schedule():
-    schedule.every().day.at(get_utc_time(3, 50)).do(job_350am)
-    schedule.every().day.at(get_utc_time(4, 0)).do(job_400am)
-    schedule.every().day.at(get_utc_time(11, 50)).do(job_1150am)
-    schedule.every().day.at(get_utc_time(12, 0)).do(job_1200pm)
-    schedule.every().day.at(get_utc_time(13, 50)).do(job_150pm)
-    schedule.every().day.at(get_utc_time(14, 0)).do(job_200pm)
+def run_scheduler():
+    schedule.every().day.at(get_utc(3, 50)).do(run_job, MSG_350AM, "Extra Signal")
+    schedule.every().day.at(get_utc(4, 0)).do(run_job, MSG_400AM, "Extra Signal")
+    schedule.every().day.at(get_utc(11, 50)).do(run_job, MSG_1150AM, "First Basic Signal")
+    schedule.every().day.at(get_utc(12, 0)).do(run_job, MSG_1200PM, "First Basic Signal")
+    schedule.every().day.at(get_utc(13, 50)).do(run_job, MSG_150PM, "Second Basic Signal")
+    schedule.every().day.at(get_utc(14, 0)).do(run_job, MSG_200PM, "Second Basic Signal")
 
-    logger.info("Scheduled jobs (UTC times):")
+    logger.info("Scheduler started. Jobs:")
     for job in schedule.jobs:
         logger.info(f"  {job}")
 
-
-async def main():
-    logger.info("=== WPPEX USERBOT STARTING ===")
-    await client.connect()
-    if not await client.is_user_authorized():
-        raise RuntimeError("Telegram session is not authorized. Re-run generate_session.py and update TELEGRAM_SESSION_STRING.")
-    me = await client.get_me()
-    logger.info(f"Logged in as: {me.first_name} (@{me.username}) | Phone: {me.phone}")
-
-    setup_schedule()
-
-    logger.info("Scheduler active. Bot is running...")
     while True:
         schedule.run_pending()
-        await asyncio.sleep(30)
+        import time
+        time.sleep(30)
+
+
+async def connect_bot():
+    global bot_client
+    bot_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+    await bot_client.connect()
+    if not await bot_client.is_user_authorized():
+        logger.error("Session is not authorized! Go to the web URL to re-authenticate.")
+        return False
+    me = await bot_client.get_me()
+    logger.info(f"Logged in as: {me.first_name} (@{me.username})")
+    return True
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    if SESSION_STRING:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        ok = loop.run_until_complete(connect_bot())
+        if ok:
+            t = threading.Thread(target=run_scheduler, daemon=True)
+            t.start()
+            logger.info("Scheduler thread started.")
+
+    logger.info(f"Starting web server on port {PORT}...")
+    app.run(host="0.0.0.0", port=PORT)
