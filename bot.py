@@ -914,142 +914,217 @@ def _mark_messages_sent(msgs: list):
         history[_msg_key(msg)] = now
     _save_sent(history)
 
-# ── Large individual message pool (90+ unique messages across all topics) ─────
-PROMO_POOL = [
-    # ── Copy trading vs 9-5 ───────────────────────────────────────────────────
-    "Honestly, copy trading has changed my life 🙏 No more 9-5 stress",
-    "I follow professor's signals and consistent profits come in daily 💰",
-    "Copy trading is the smartest passive income strategy I've found 📈",
-    "You can do it from home, from anywhere in the world 🏠 Total freedom",
-    "No boss, no commute, just follow the signal and earn 😂💰",
-    "Trading from home beats any 9-5 job I've ever had 💪",
-    "Who else is making money while others are stuck in traffic? 😂",
-    "My income hasn't been this stable since I started copy trading 📊",
-    "The 9-5 system was never designed for real financial freedom 🔥",
-    "Copy trading gives you time AND money — that's the real goal 💯",
-    "My lifestyle has completely changed since I stopped depending on salary 🙌",
-    "Imagine getting paid while you sleep — that's what copy trading does 🏠💰",
-    # ── Crypto prices and liquidity ───────────────────────────────────────────
-    "Crypto market is looking really strong right now 🚀",
-    "Liquidity is high today — perfect conditions for trading 📊",
-    "When liquidity is strong the signals hit even better 🎯",
-    "Crypto prices are moving beautifully this week 📈",
-    "Great market conditions today, professor's timing is always on point 🙌",
-    "This market momentum is exactly why I stay in this group every day 🔥",
-    "The crypto market never sleeps and neither does our income 💰",
-    "Good volatility today — signals are performing really well 🎯",
-    "Crypto is up again — being in the right group at the right time matters 🚀",
-    "Market is moving in our favour today 📈 Professor called it perfectly",
-    # ── QT Investment Group opportunity ───────────────────────────────────────
-    "Joining QT Investment Group is the best financial decision I've made 🙌",
-    "The opportunity in this group is real and it shows up daily 📈",
-    "Professor has never missed a day — always showing up for us 💯",
-    "QT is different from every other group I've been in — real results 🔥",
-    "This community genuinely wants everyone in here to win 🙏",
-    "QT Investment Group opened my eyes to what's truly possible financially 💪",
-    "The consistency in this group is what keeps me coming back every day 📊",
-    "If you're not in QT Investment Group you're honestly missing out 🚀",
-    "QT has taught me that financial freedom is not a dream — it's a plan 🎯",
-    "This group changed the direction of my finances completely 🙌💰",
-    # ── Referral rewards ─────────────────────────────────────────────────────
-    "Has anyone here taken advantage of the referral rewards yet? 👀",
-    "I brought in 3 people last month and the referral bonuses were great 💰",
-    "Referrals give you extra income on top of your trading profits 📊",
-    "The more people you bring into QT the more everyone benefits 🙏",
-    "Tell your friends about QT — you earn from their copy trading activity too 💪",
-    "Referral income is passive income on top of your passive income 🔥",
-    "I share QT with everyone I know — the referral rewards alone are worth it 💰",
-    "Bring your network in and build residual income through referrals 📈",
-    "Every person you refer is another income stream added to yours 💯",
-    # ── Team formation ───────────────────────────────────────────────────────
-    "Building a team inside QT is the fastest way to multiply your income 💰",
-    "When your team copies trades you benefit from their volume too 📈",
-    "Team formation is how the top earners here grow their income fast 🔥",
-    "This is why I tell everyone I know to join QT Investment Group 💪",
-    "Solo income is good but team income is on a completely different level 🙌",
-    "The more people in your team the more income streams you control 📊",
-    "Team building in QT means leveraged daily income — simple 💯",
-    "Our team is growing and so is everyone's income — that's the power here 🙏",
-    # ── Stable income from copy trading ──────────────────────────────────────
-    "Copy trading gives stable daily income that beats any monthly salary 📊",
-    "The market is open 24/7 and signals come in every single day 🌍",
-    "With professor's accuracy the returns are very consistent and reliable 🙏",
-    "Best stable online income I've come across — I've tried a lot of things 💯",
-    "Unlike a job, this income doesn't depend on any employer or boss 💪",
-    "Stable daily income without answering to anyone — that's real freedom 🏠",
-    "My monthly income from copy trading now exceeds my old salary 📈",
-    "Consistent. Reliable. Stable. That's exactly what QT copy trading delivers 🎯",
-    "No market dips can stop this — professor signals both directions 🔥",
-    # ── Forex trading ────────────────────────────────────────────────────────
-    "Forex market is moving really well today — great liquidity 📈",
-    "Professor covers both crypto AND forex — double opportunity every day 💪",
-    "Two markets, two income streams, one group 🔥 That's genuine value",
-    "Forex signals here are as sharp as the crypto ones — very impressive 🎯",
-    "Once you understand the signals forex becomes very straightforward 📊",
-    "Forex and crypto together mean income regardless of which market is active 💰",
-    "Professor reads both markets perfectly — that's a rare skill 🙌",
-    # ── Copy trading simplicity ───────────────────────────────────────────────
-    "What I love most about copy trading is how genuinely simple it is 😊",
-    "You don't need charts or technical knowledge — just follow professor 📱",
-    "See the signal → copy the trade → wait for profit ✅ That's all it takes",
-    "Even total beginners can earn here — the signals do all the heavy work 🙌",
-    "I had zero trading experience when I joined, now I earn consistently 💰",
-    "The learning curve is literally zero — see signal, copy, earn 📈",
-    "Anyone can do this — no experience, no background needed at all 🙏",
-    "I showed my cousin how to copy trade last week and he's already in profit 😂",
-    # ── Rising crypto prices ───────────────────────────────────────────────────
-    "Crypto prices rising across the board — great time to be active here 📈",
-    "Professor always positions us perfectly before the big price moves 🎯",
-    "Being in the right trading group during a bull run changes everything 🚀",
-    "The timing of these signals during market moves is genuinely exceptional 🔥",
-    "Green across the board again today — this is why we copy trade 💰",
-    "Every time the market moves professor has already called it 🎯 Unreal",
-    # ── Income without leaving home ───────────────────────────────────────────
-    "Earning from home without a boss is still unreal to me 🏠💰",
-    "Copy trading lets you work on your own terms and your own schedule 📊",
-    "I used to commute 2 hours every day — now that time earns me money 😂",
-    "QT Investment Group gave me a completely new perspective on income 🙌",
-    "My phone is my office and the signals are my daily work schedule 📱💰",
-    "Financial freedom isn't some dream when you're in the right community 🔥",
-    "I work less and earn more since I started copy trading here 💯",
-    # ── General positive ─────────────────────────────────────────────────────
-    "Every day in this group is another day of real financial growth 📈",
-    "Grateful to be part of this community honestly 🙏",
-    "Professor's dedication to this group is unlike anything I've seen before 💯",
-    "This group proves that the right information genuinely changes lives 🔥",
-    "Another signal, another profit — consistency is the real key here 💰",
-    "Everyone in this group is working towards the same goal — freedom 🙌",
-    "The knowledge shared here is worth more than any expensive trading course 📊",
-    "Months of being here and I still learn something new every week 🎯",
-    "This is not just a group — it's a community building wealth together 💪",
-]
+# ── Topic-based conversation pool ────────────────────────────────────────────
+# Each topic is a list of messages that are contextually related.
+# Within a session all messages come from ONE topic so conversation stays coherent.
+# A second topic may be introduced mid-session to simulate a natural topic change.
+PROMO_TOPICS = {
+    "copy_vs_job": [
+        "Copy trading has genuinely changed my life 🙏 No more 9-5 stress",
+        "I quit my 9-5 job 3 months ago and haven't looked back once 💪",
+        "No boss, no commute, just follow the professor's signal and earn 😂💰",
+        "Working from home beats any office job I've ever had 📊",
+        "Who else here is earning while others are stuck in traffic? 😂",
+        "My income has been more stable since copy trading than any salary I had 💯",
+        "The 9-5 system was never built for real financial freedom 🔥",
+        "Copy trading gives you time AND money — that's the real dream 🙌",
+        "My lifestyle changed completely since I stopped depending on a salary 📈",
+        "Imagine getting paid while you sleep — that's exactly what this is 🏠💰",
+        "I used to work 12-hour days for someone else. Now I work for myself 💪",
+        "Copy trading from QT is the best career change I ever made 🎯",
+    ],
+    "crypto_market": [
+        "Crypto market is looking really strong right now 🚀",
+        "Liquidity is very high today — perfect conditions for trading 📊",
+        "When liquidity is strong the signals hit even better 🎯",
+        "Crypto prices are moving beautifully this week 📈",
+        "Professor's market timing is always on point regardless of conditions 🙌",
+        "The crypto market never sleeps and neither does our income 💰",
+        "Good volatility today — signals performing really well 🎯",
+        "Crypto is up again — being in the right group matters so much 🚀",
+        "Market is moving in our favour today 📈 Professor called it perfectly",
+        "Green candles across the board — this is why we stay in this group 🔥",
+        "Bitcoin is moving nicely today, perfect signal conditions 📊",
+        "Market momentum is strong — professor always positions us ahead of it 💪",
+    ],
+    "qt_opportunity": [
+        "Joining QT Investment Group is the best financial decision I've made 🙌",
+        "The opportunity in this group shows up consistently every single day 📈",
+        "Professor has never missed a day — always here and showing up for us 💯",
+        "QT is different from every other group I've tried — real results 🔥",
+        "This community genuinely wants every single member to win 🙏",
+        "QT opened my eyes to what's truly possible when you're in the right place 💪",
+        "The consistency here is what keeps me coming back every day 📊",
+        "If you're not in QT Investment Group you're honestly missing out 🚀",
+        "QT has shown me that financial freedom is not a dream — it's a plan 🎯",
+        "This group changed the direction of my finances completely 🙌💰",
+        "I've referred 5 people to QT and all of them are grateful now 🙏",
+        "New members joining every week — the word is spreading fast 🔥",
+    ],
+    "referrals": [
+        "Has anyone here taken advantage of the referral rewards yet? 👀",
+        "I brought in 3 people last month and the referral bonuses are real 💰",
+        "Referrals give you extra income on top of your daily trading profits 📊",
+        "The more people you bring into QT the more everyone benefits 🙏",
+        "Tell your friends — you earn from their copy trading activity too 💪",
+        "Referral income is passive income stacked on top of passive income 🔥",
+        "I share QT with everyone I know — the referral rewards alone are worth it 💰",
+        "Bring your network in and start building residual income from referrals 📈",
+        "Every person you refer adds another income stream to yours 💯",
+        "My referral bonus this month covered my phone bill and data 😂💰",
+        "Easy way to earn extra — just share QT with people who want to grow financially 📊",
+    ],
+    "team_building": [
+        "Building a team inside QT is the fastest way to grow your income 💰",
+        "When your team copies trades you benefit from their trading volume too 📈",
+        "Team formation is how the big earners here multiply income fast 🔥",
+        "Solo income is great but team income is a completely different level 🙌",
+        "The more people in your team the more income streams you control 📊",
+        "This is leveraged income — your team works and you all earn together 💯",
+        "Our team is growing weekly and everyone's income is increasing 🙏",
+        "Teamwork is the fastest path to real financial growth here 💪",
+        "I started with just 2 people in my team — now we all earn consistently 🎯",
+        "Every new team member adds more volume and more income for everyone 🔥",
+    ],
+    "stable_income": [
+        "Copy trading gives stable daily income that beats any monthly salary 📊",
+        "The market is open 24/7 and signals come in every single day 🌍",
+        "With professor's accuracy the returns are very consistent and reliable 🙏",
+        "Unlike a job, this income doesn't depend on any employer or boss 💪",
+        "Stable daily income without answering to anyone — that's freedom 🏠",
+        "My monthly income from copy trading now exceeds my old salary 📈",
+        "Consistent. Reliable. Stable. That's what QT copy trading delivers 🎯",
+        "Professor signals both rising and falling markets — income flows both ways 🔥",
+        "I've not missed a single profitable month since joining QT 💰",
+        "This is the most consistent income I've ever had in my life 💯",
+    ],
+    "forex_trading": [
+        "Forex market is moving really well today — great liquidity 📈",
+        "Professor covers crypto AND forex — double income opportunity every day 💪",
+        "Two markets, two income streams, one group 🔥 That's real value",
+        "Forex signals here are just as sharp as the crypto ones — impressive 🎯",
+        "Once you understand the signals forex becomes very easy to follow 📊",
+        "Forex and crypto together means income no matter which market is active 💰",
+        "Professor reads both markets perfectly — that's a rare and valuable skill 🙌",
+        "Forex pairs are moving nicely today alongside crypto 📈 Good session ahead",
+        "The fact that we get both forex and crypto signals daily is incredible 💪",
+    ],
+    "simplicity": [
+        "What I love most about copy trading is how genuinely simple it is 😊",
+        "You don't need charts or technical knowledge — just follow professor 📱",
+        "See the signal → copy the trade → wait for profit ✅ That's literally it",
+        "Even total beginners can earn here — the signals do all the work 🙌",
+        "I had zero trading experience when I joined, now I earn every day 💰",
+        "The learning curve here is literally zero — see signal, copy, earn 📈",
+        "Anyone can do this — young, old, no experience needed at all 🙏",
+        "I showed my cousin how to set up last week and he's already making profit 😂",
+        "This is the easiest income source I've ever found — and I've tried many 💯",
+        "You don't need to understand the market — professor does that for you 🎯",
+    ],
+    "home_income": [
+        "Earning from home without a boss is still unreal to me 🏠💰",
+        "Copy trading lets you work on your own terms and schedule 📊",
+        "I used to commute 2 hours every day — now that time earns me money 😂",
+        "QT Investment Group gave me a completely new perspective on income 🙌",
+        "My phone is my office and professor's signals are my daily work 📱💰",
+        "Financial freedom isn't a dream when you're in the right community 🔥",
+        "I work less and earn more since I started copy trading here 💯",
+        "Location doesn't matter — I've been earning from everywhere I travel 🌍",
+        "Home, holiday, anywhere — the income follows you with copy trading 💪",
+    ],
+}
+
+# Flat list of every message across all topics (for 90-day tracking)
+_ALL_PROMO_MSGS = [m for msgs in PROMO_TOPICS.values() for m in msgs]
+
 
 async def _fire_promo_session():
-    """Pick 4-6 available messages, assign random non-consecutive bots, send with delays."""
+    """
+    Fire a natural topic-based conversation:
+    - All messages come from ONE chosen topic (stays coherent)
+    - Random non-consecutive bot ordering (e.g. 1→3→2→1→4→2)
+    - 60% of messages reply to the previous one in each group (Telegram reply tag)
+    - Optionally a second bot introduces a new topic mid-conversation
+    """
     if not MEMBER_CLIENTS:
-        logger.warning("[Promo] No member bots connected — skipping promo session.")
+        logger.warning("[Promo] No member bots connected — skipping.")
         return
 
-    pool     = _available_messages(PROMO_POOL)
-    n_bots   = len(MEMBER_CLIENTS)
-    count    = random.randint(4, 6)
-    chosen   = pool[:count]  # already sorted: freshest first (unused first)
-    random.shuffle(chosen)   # shuffle so same topic isn't always first
+    n_bots = len(MEMBER_CLIENTS)
 
-    # Build bot sequence: random, no same bot twice in a row
+    # ── Pick a topic with available (not recently sent) messages ─────────────
+    topic_candidates = []
+    for topic_id, msgs in PROMO_TOPICS.items():
+        avail = _available_messages(msgs)
+        if len(avail) >= 3:
+            topic_candidates.append((topic_id, avail))
+
+    if not topic_candidates:
+        # All topics exhausted — fall back to least-recently-sent across all topics
+        logger.warning("[Promo] All topics exhausted — using fallback pool.")
+        avail = _available_messages(_ALL_PROMO_MSGS)
+        topic_candidates = [("fallback", avail)]
+
+    topic_id, avail_msgs = random.choice(topic_candidates)
+    random.shuffle(avail_msgs)
+
+    count = random.randint(4, 6)
+    chosen = avail_msgs[:count]
+
+    # ── Optionally splice in one "topic change" message from a different topic ─
+    # (~30% chance, only if conversation is 5+ messages long)
+    if len(chosen) >= 5 and random.random() < 0.30:
+        other_topics = [t for t in PROMO_TOPICS if t != topic_id]
+        if other_topics:
+            new_topic_id = random.choice(other_topics)
+            new_avail    = _available_messages(PROMO_TOPICS[new_topic_id])
+            if new_avail:
+                change_msg = random.choice(new_avail)
+                insert_at  = random.randint(3, len(chosen) - 1)
+                chosen.insert(insert_at, change_msg)
+                logger.info(f"[Promo] Topic change at msg {insert_at+1}: {new_topic_id}")
+
+    # ── Build bot sequence: random, no same bot twice in a row ────────────────
     bot_seq = []
-    for i in range(len(chosen)):
-        options = list(range(n_bots))
-        if bot_seq and len(options) > 1:
-            options = [b for b in options if b != bot_seq[-1]]
-        bot_seq.append(random.choice(options))
+    for _ in range(len(chosen)):
+        opts = list(range(n_bots))
+        if bot_seq and len(opts) > 1:
+            opts = [b for b in opts if b != bot_seq[-1]]
+        bot_seq.append(random.choice(opts))
 
     _mark_messages_sent(chosen)
-    logger.info(f"[Promo] Firing {len(chosen)} messages, bot order: {[b+1 for b in bot_seq]}")
+    logger.info(f"[Promo] Topic={topic_id} | {len(chosen)} msgs | bots={[b+1 for b in bot_seq]}")
 
-    for bot_idx, msg in zip(bot_seq, chosen):
-        await _mbr_send(bot_idx, msg, "Promo-MBR")
-        await asyncio.sleep(random.uniform(90, 210))   # 1.5 – 3.5 min gap
+    # ── Send with per-group reply tracking ────────────────────────────────────
+    # group_last_msg_id[group_id] = id of the last message sent in that group
+    group_last_id: dict = {}
+
+    for i, (bot_idx, text) in enumerate(zip(bot_seq, chosen)):
+        client, groups = MEMBER_CLIENTS[bot_idx]
+        # First message never replies; subsequent messages reply ~60% of the time
+        use_reply = (i > 0) and (random.random() < 0.60)
+
+        for g in groups:
+            reply_to = group_last_id.get(g.id) if use_reply else None
+            try:
+                sent = await client.send_message(g, text, reply_to=reply_to)
+                group_last_id[g.id] = sent.id
+                logger.info(f"[Promo] Bot{bot_idx+1} → '{g.title}'"
+                            + (" (reply)" if reply_to else ""))
+                await asyncio.sleep(1.5)
+            except FloodWaitError as e:
+                await asyncio.sleep(e.seconds + 2)
+                try:
+                    sent = await client.send_message(g, text, reply_to=reply_to)
+                    group_last_id[g.id] = sent.id
+                except Exception:
+                    pass
+            except Exception as exc:
+                logger.error(f"[Promo] Bot{bot_idx+1} error: {exc}")
+
+        # Natural delay between turns (1.5 – 3.5 minutes)
+        await asyncio.sleep(random.uniform(90, 210))
+
 
 def fire_promo():
     asyncio.run_coroutine_threadsafe(_fire_promo_session(), _loop)
