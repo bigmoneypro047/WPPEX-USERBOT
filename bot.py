@@ -8,7 +8,7 @@ from datetime import datetime
 import urllib.request
 from flask import Flask, request, render_template_string, session
 import pytz
-from telethon import TelegramClient
+from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError, SessionPasswordNeededError
 from telethon.tl.functions.messages import EditChatDefaultBannedRightsRequest
@@ -43,6 +43,7 @@ MEMBER_SESSIONS_RAW = [
     os.environ.get("MEMBER_SESSION_4", ""),
 ]
 MEMBER_CLIENTS = []  # list of (TelegramClient, [group_entities]) tuples
+PROFESSOR_ID   = None  # set at startup so event handlers can exclude PROFESSOR
 
 # ── Member setup flow state ───────────────────────────────────────────────────
 _member_setup_client = None
@@ -790,6 +791,101 @@ GENERAL_MSGS = [
     "Grateful to be part of this community 🙏",
 ]
 
+PROF_MORNING_REPLIES = [
+    "Good morning professor 🙏",
+    "Welcome professor! 🌅",
+    "Good morning professor, ready for today's signals 💪",
+    "Morning professor! 🙏",
+    "Good morning professor 🌅 Looking forward to today!",
+]
+
+READY_MSGS = [
+    "Ready 👌",
+    "Ready ✅",
+    "Ready! 💪",
+    "Prepared and waiting 👀",
+    "All set ✅",
+]
+
+DONE_MSGS = [
+    "Done ✅",
+    "Done! 💰",
+    "Done 🙌",
+    "Trade complete! 📊",
+    "Done, great signal as always 🎯",
+]
+
+GREETING_KEYWORDS = [
+    "good morning", "morning", "good afternoon", "afternoon",
+    "good evening", "evening", "hello", "hi", "hey",
+    "new here", "i'm new", "im new", "just joined", "newly joined",
+    "gm", "howdy", "greetings",
+]
+
+def get_greeting_response(msg: str) -> str:
+    m = msg.lower()
+    if any(k in m for k in ["new here", "i'm new", "im new", "just joined", "newly joined"]):
+        return random.choice([
+            "Welcome to the group! 🙏 You're in the right place",
+            "Welcome! 🎉 Great decision joining us",
+            "Welcome aboard! 🙌 You'll love it here",
+            "Welcome! 😊 The best trading community online",
+        ])
+    elif any(k in m for k in ["good morning", "morning", "gm"]):
+        return random.choice([
+            "Good morning! 🌅",
+            "GM! 💪",
+            "Good morning! 🙏",
+            "Morning! 🌞 Ready for the day",
+        ])
+    elif any(k in m for k in ["good afternoon", "afternoon"]):
+        return random.choice([
+            "Good afternoon! ☀️",
+            "Good afternoon! 🙏",
+            "Afternoon everyone! 😊",
+        ])
+    elif any(k in m for k in ["good evening", "evening"]):
+        return random.choice([
+            "Good evening! 🌙",
+            "Good evening! 🙏",
+        ])
+    else:
+        return random.choice([
+            "Hello! 👋",
+            "Hey! 👋",
+            "Hi there! 🙏",
+            "Greetings! 🙏",
+        ])
+
+
+async def setup_member_event_handlers(client, groups, bot_idx: int, member_ids: set):
+    """Register a Telethon event handler so this member bot responds to greetings."""
+    group_ids = [g.id for g in groups]
+    me = await client.get_me()
+    my_id = me.id
+
+    @client.on(events.NewMessage(chats=group_ids, incoming=True))
+    async def handle_greeting(event):
+        try:
+            sender = await event.get_sender()
+            if sender is None:
+                return
+            sid = sender.id
+            # Skip own messages, other member bots, and PROFESSOR
+            excluded = member_ids | ({PROFESSOR_ID} if PROFESSOR_ID else set()) | {my_id}
+            if sid in excluded:
+                return
+            msg = event.message.message or ""
+            if not any(kw in msg.lower() for kw in GREETING_KEYWORDS):
+                return
+            # Stagger: each bot waits its own natural-feeling delay
+            await asyncio.sleep(random.uniform(4, 18) + bot_idx * 9)
+            response = get_greeting_response(msg)
+            await client.send_message(event.chat_id, response)
+            logger.info(f"[MemberBot {bot_idx+1}] Greeted back: {response!r}")
+        except Exception as exc:
+            logger.error(f"[MemberBot {bot_idx+1}] Greeting handler error: {exc}")
+
 
 async def _resolve_member_groups(client) -> list:
     """Scan dialogs for a member bot client and return the 3 main group entities."""
@@ -814,6 +910,8 @@ async def start_member_bots():
     """Connect all 4 member bots that have a session string configured."""
     global MEMBER_CLIENTS
     MEMBER_CLIENTS.clear()
+
+    # Pass 1 – connect every bot and resolve groups
     for idx, sess in enumerate(MEMBER_SESSIONS_RAW):
         if not sess.strip():
             logger.info(f"[MemberBot {idx+1}] No session — skipping.")
@@ -831,7 +929,25 @@ async def start_member_bots():
             MEMBER_CLIENTS.append((client, groups))
         except Exception as e:
             logger.error(f"[MemberBot {idx+1}] Failed to start: {e}")
+
     logger.info(f"[MemberBots] {len(MEMBER_CLIENTS)}/4 member bot(s) ready.")
+
+    # Pass 2 – collect all member user IDs (so handlers can ignore bot-to-bot messages)
+    member_ids: set = set()
+    for client, _ in MEMBER_CLIENTS:
+        try:
+            m = await client.get_me()
+            member_ids.add(m.id)
+        except Exception:
+            pass
+
+    # Pass 3 – register greeting event handlers on every connected bot
+    for bot_idx, (client, groups) in enumerate(MEMBER_CLIENTS):
+        try:
+            await setup_member_event_handlers(client, groups, bot_idx, member_ids)
+            logger.info(f"[MemberBot {bot_idx+1}] Greeting event handler registered.")
+        except Exception as e:
+            logger.error(f"[MemberBot {bot_idx+1}] Handler setup failed: {e}")
 
 
 async def _mbr_send(bot_idx: int, msg: str, label: str):
@@ -882,10 +998,17 @@ def run_scheduler():
     # ── Night lock ───────────────────────────────────────────
     schedule.every().day.at(get_utc(17, 0)).do(fire_lock, "Night Lock")
 
-    # ── Member bot activity — morning greetings (3:05–3:12 AM WAT) ───────────
-    schedule.every().day.at(get_utc(3,  5)).do(fire_mbr, 0, random.choice(MORNING_MSGS), "Morning-MBR")
-    schedule.every().day.at(get_utc(3,  8)).do(fire_mbr, 1, random.choice(MORNING_MSGS), "Morning-MBR")
-    schedule.every().day.at(get_utc(3, 12)).do(fire_mbr, 2, random.choice(MORNING_MSGS), "Morning-MBR")
+    # ── Member bots reply to PROFESSOR's morning greeting (3:03–3:09 AM WAT) ──
+    schedule.every().day.at(get_utc(3,  3)).do(fire_mbr, 0, random.choice(PROF_MORNING_REPLIES), "MorningReply-MBR")
+    schedule.every().day.at(get_utc(3,  5)).do(fire_mbr, 1, random.choice(PROF_MORNING_REPLIES), "MorningReply-MBR")
+    schedule.every().day.at(get_utc(3,  7)).do(fire_mbr, 2, random.choice(PROF_MORNING_REPLIES), "MorningReply-MBR")
+    schedule.every().day.at(get_utc(3,  9)).do(fire_mbr, 3, random.choice(PROF_MORNING_REPLIES), "MorningReply-MBR")
+
+    # ── "Ready" before extra signal lock (3:28–3:29 AM WAT, lock at 3:30) ────
+    schedule.every().day.at(get_utc(3, 28)).do(fire_mbr, 0, random.choice(READY_MSGS), "Ready-Extra-MBR")
+    schedule.every().day.at(get_utc(3, 28)).do(fire_mbr, 1, random.choice(READY_MSGS), "Ready-Extra-MBR")
+    schedule.every().day.at(get_utc(3, 29)).do(fire_mbr, 2, random.choice(READY_MSGS), "Ready-Extra-MBR")
+    schedule.every().day.at(get_utc(3, 29)).do(fire_mbr, 3, random.choice(READY_MSGS), "Ready-Extra-MBR")
 
     # ── Pre-extra-signal Q&A — once per week (Monday only) ───────────────────
     schedule.every().monday.at(get_utc(3, 46)).do(
@@ -895,14 +1018,24 @@ def run_scheduler():
     schedule.every().monday.at(get_utc(3, 49)).do(
         fire_mbr, 1, random.choice(PRE_SIGNAL_CONFIRMS), "PreExtra-MBR")
 
-    # ── Post-extra-signal reactions (4:02–4:08 AM WAT) ───────────────────────
+    # ── Post-extra-signal reactions + "Done" (4:02–4:11 AM WAT) ─────────────
     schedule.every().day.at(get_utc(4,  2)).do(fire_mbr, 2, random.choice(SIGNAL_REACTIONS), "PostExtra-MBR")
     schedule.every().day.at(get_utc(4,  4)).do(fire_mbr, 3, random.choice(SIGNAL_REACTIONS), "PostExtra-MBR")
     schedule.every().day.at(get_utc(4,  8)).do(fire_mbr, 0, random.choice(SIGNAL_REACTIONS), "PostExtra-MBR")
+    schedule.every().day.at(get_utc(4, 10)).do(fire_mbr, 1, random.choice(DONE_MSGS), "Done-Extra-MBR")
+    schedule.every().day.at(get_utc(4, 10)).do(fire_mbr, 2, random.choice(DONE_MSGS), "Done-Extra-MBR")
+    schedule.every().day.at(get_utc(4, 11)).do(fire_mbr, 3, random.choice(DONE_MSGS), "Done-Extra-MBR")
+    schedule.every().day.at(get_utc(4, 11)).do(fire_mbr, 0, random.choice(DONE_MSGS), "Done-Extra-MBR")
 
     # ── General midday chat ───────────────────────────────────────────────────
     schedule.every().day.at(get_utc(8,  0)).do(fire_mbr, 1, random.choice(GENERAL_MSGS), "General-MBR")
     schedule.every().day.at(get_utc(10, 30)).do(fire_mbr, 3, random.choice(GENERAL_MSGS), "General-MBR")
+
+    # ── "Ready" before first signal lock (11:28–11:29 AM WAT, lock at 11:30) ─
+    schedule.every().day.at(get_utc(11, 28)).do(fire_mbr, 0, random.choice(READY_MSGS), "Ready-First-MBR")
+    schedule.every().day.at(get_utc(11, 28)).do(fire_mbr, 1, random.choice(READY_MSGS), "Ready-First-MBR")
+    schedule.every().day.at(get_utc(11, 29)).do(fire_mbr, 2, random.choice(READY_MSGS), "Ready-First-MBR")
+    schedule.every().day.at(get_utc(11, 29)).do(fire_mbr, 3, random.choice(READY_MSGS), "Ready-First-MBR")
 
     # ── Pre-first-signal Q&A — once per week (Monday only) ──────────────────
     schedule.every().monday.at(get_utc(11, 41)).do(
@@ -912,10 +1045,20 @@ def run_scheduler():
     schedule.every().monday.at(get_utc(11, 46)).do(
         fire_mbr, 0, random.choice(PRE_SIGNAL_CONFIRMS), "PreFirst-MBR")
 
-    # ── Post-first-signal reactions (12:02–12:08 PM WAT) ─────────────────────
+    # ── Post-first-signal reactions + "Done" (12:02–12:11 PM WAT) ───────────
     schedule.every().day.at(get_utc(12,  2)).do(fire_mbr, 2, random.choice(SIGNAL_REACTIONS), "PostFirst-MBR")
     schedule.every().day.at(get_utc(12,  4)).do(fire_mbr, 1, random.choice(SIGNAL_REACTIONS), "PostFirst-MBR")
     schedule.every().day.at(get_utc(12,  8)).do(fire_mbr, 0, random.choice(SIGNAL_REACTIONS), "PostFirst-MBR")
+    schedule.every().day.at(get_utc(12, 10)).do(fire_mbr, 3, random.choice(DONE_MSGS), "Done-First-MBR")
+    schedule.every().day.at(get_utc(12, 10)).do(fire_mbr, 0, random.choice(DONE_MSGS), "Done-First-MBR")
+    schedule.every().day.at(get_utc(12, 11)).do(fire_mbr, 1, random.choice(DONE_MSGS), "Done-First-MBR")
+    schedule.every().day.at(get_utc(12, 11)).do(fire_mbr, 2, random.choice(DONE_MSGS), "Done-First-MBR")
+
+    # ── "Ready" before second signal lock (13:28–13:29 PM WAT, lock at 13:30) ─
+    schedule.every().day.at(get_utc(13, 28)).do(fire_mbr, 0, random.choice(READY_MSGS), "Ready-Second-MBR")
+    schedule.every().day.at(get_utc(13, 28)).do(fire_mbr, 1, random.choice(READY_MSGS), "Ready-Second-MBR")
+    schedule.every().day.at(get_utc(13, 29)).do(fire_mbr, 2, random.choice(READY_MSGS), "Ready-Second-MBR")
+    schedule.every().day.at(get_utc(13, 29)).do(fire_mbr, 3, random.choice(READY_MSGS), "Ready-Second-MBR")
 
     # ── Pre-second-signal Q&A — once per week (Monday only) ─────────────────
     schedule.every().monday.at(get_utc(13, 41)).do(
@@ -925,10 +1068,14 @@ def run_scheduler():
     schedule.every().monday.at(get_utc(13, 46)).do(
         fire_mbr, 1, random.choice(PRE_SIGNAL_CONFIRMS), "PreSecond-MBR")
 
-    # ── Post-second-signal reactions (2:02–2:08 PM WAT) ──────────────────────
+    # ── Post-second-signal reactions + "Done" (14:02–14:11 PM WAT) ──────────
     schedule.every().day.at(get_utc(14,  2)).do(fire_mbr, 0, random.choice(SIGNAL_REACTIONS), "PostSecond-MBR")
     schedule.every().day.at(get_utc(14,  4)).do(fire_mbr, 3, random.choice(SIGNAL_REACTIONS), "PostSecond-MBR")
     schedule.every().day.at(get_utc(14,  8)).do(fire_mbr, 2, random.choice(SIGNAL_REACTIONS), "PostSecond-MBR")
+    schedule.every().day.at(get_utc(14, 10)).do(fire_mbr, 1, random.choice(DONE_MSGS), "Done-Second-MBR")
+    schedule.every().day.at(get_utc(14, 10)).do(fire_mbr, 2, random.choice(DONE_MSGS), "Done-Second-MBR")
+    schedule.every().day.at(get_utc(14, 11)).do(fire_mbr, 3, random.choice(DONE_MSGS), "Done-Second-MBR")
+    schedule.every().day.at(get_utc(14, 11)).do(fire_mbr, 0, random.choice(DONE_MSGS), "Done-Second-MBR")
 
     # ── Afternoon general chat ────────────────────────────────────────────────
     schedule.every().day.at(get_utc(15, 30)).do(fire_mbr, 1, random.choice(GENERAL_MSGS), "General-MBR")
@@ -1032,7 +1179,9 @@ async def start_bot():
         logger.error("Session not authorized! Visit the web URL to re-authenticate.")
         return
     me = await bot_client.get_me()
-    logger.info(f"=== PROFESSOR online as: {me.first_name} (@{me.username}) ===")
+    global PROFESSOR_ID
+    PROFESSOR_ID = me.id
+    logger.info(f"=== PROFESSOR online as: {me.first_name} (@{me.username}) (ID={PROFESSOR_ID}) ===")
 
     await resolve_groups()
 
