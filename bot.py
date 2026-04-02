@@ -4,6 +4,7 @@ import logging
 import threading
 from concurrent.futures import Future
 from datetime import datetime
+import urllib.request
 from flask import Flask, request, render_template_string, session
 import pytz
 from telethon import TelegramClient
@@ -269,6 +270,11 @@ RUNNING_PAGE = STYLE + """
 """
 
 
+@app.route("/ping")
+def ping():
+    return "pong", 200
+
+
 @app.route("/")
 def index():
     if SESSION_STRING:
@@ -505,10 +511,27 @@ async def start_bot():
     await bot_client.run_until_disconnected()
 
 
+def keep_alive():
+    """Ping own /ping endpoint every 5 seconds so the service never sleeps."""
+    self_url = os.environ.get("RENDER_EXTERNAL_URL", f"http://localhost:{PORT}").rstrip("/")
+    ping_url = f"{self_url}/ping"
+    logger.info(f"[KeepAlive] Starting — pinging {ping_url} every 5 seconds")
+    while True:
+        try:
+            urllib.request.urlopen(ping_url, timeout=5)
+        except Exception:
+            pass
+        time_mod.sleep(5)
+
+
 if __name__ == "__main__":
     if SESSION_STRING:
         asyncio.run_coroutine_threadsafe(start_bot(), _loop)
         logger.info("Bot started in background loop.")
+
+    # Start keep-alive pinger
+    ka_thread = threading.Thread(target=keep_alive, daemon=True)
+    ka_thread.start()
 
     logger.info(f"Starting web server on port {PORT}...")
     app.run(host="0.0.0.0", port=PORT)
