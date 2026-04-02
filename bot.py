@@ -398,6 +398,23 @@ def test_send():
         return "❌ No groups resolved yet — check Render logs for startup errors.", 400
 
 
+@app.route("/test-promo")
+def test_promo():
+    """Immediately fire one promo conversation to verify member bots are working."""
+    if not MEMBER_CLIENTS:
+        return (
+            "❌ No member bots connected. Check MEMBER_SESSION_1-4 are set in Render "
+            "and that the accounts are members of the groups.", 400
+        )
+    fire_promo()
+    n = len(MEMBER_CLIENTS)
+    return (
+        f"✅ Promo conversation triggered with {n} member bot(s). "
+        "Check your Telegram groups — messages will appear over the next 8-15 minutes "
+        "(natural delays between each message)."
+    ), 200
+
+
 @app.route("/member-setup")
 def member_setup():
     configured = sum(1 for s in MEMBER_SESSIONS_RAW if s.strip())
@@ -1325,15 +1342,21 @@ def run_scheduler():
     schedule.every().day.at(get_utc(14, 11)).do(fire_mbr, 3, random.choice(DONE_MSGS), "Done-Second-MBR")
     schedule.every().day.at(get_utc(14, 11)).do(fire_mbr, 0, random.choice(DONE_MSGS), "Done-Second-MBR")
 
-    # ── Promo conversations — 30 mins after each group unlock ─────────────────
-    # Morning window opens 3:00 AM → promo at 3:15 (before 3:28 "ready" msgs)
+    # ── Promo conversations — every ~2 hours while group is open ──────────────
+    # Morning window (3:00–3:30 AM) — short, just one session
     schedule.every().day.at(get_utc(3,  15)).do(fire_promo)
-    # After extra signal unlock (4:05 AM) → promo at 4:35 AM
+    # Long open window (4:05 AM – 11:30 AM) — every ~90 mins
     schedule.every().day.at(get_utc(4,  35)).do(fire_promo)
-    # After first signal unlock (12:05 PM) → promo at 12:35 PM
+    schedule.every().day.at(get_utc(5,  45)).do(fire_promo)
+    schedule.every().day.at(get_utc(7,   0)).do(fire_promo)
+    schedule.every().day.at(get_utc(9,   0)).do(fire_promo)
+    schedule.every().day.at(get_utc(10, 45)).do(fire_promo)
+    # After first signal unlock (12:05 PM – 13:30 PM)
     schedule.every().day.at(get_utc(12, 35)).do(fire_promo)
-    # After second signal unlock (14:05 PM) → promo at 14:35 PM
+    schedule.every().day.at(get_utc(13, 10)).do(fire_promo)
+    # After second signal unlock (14:05 PM – 17:00 PM)
     schedule.every().day.at(get_utc(14, 35)).do(fire_promo)
+    schedule.every().day.at(get_utc(16,  0)).do(fire_promo)
 
     # ── Afternoon general chat ────────────────────────────────────────────────
     schedule.every().day.at(get_utc(15, 30)).do(fire_mbr, 1, random.choice(GENERAL_MSGS), "General-MBR")
