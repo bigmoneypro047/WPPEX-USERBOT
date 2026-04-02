@@ -1729,8 +1729,13 @@ async def start_bot():
     # Catch up on any jobs missed while the bot was restarting
     await catch_up_on_startup()
 
-    # ── Link-deletion guard ───────────────────────────────────────────────────
+    # ── Moderation guard ─────────────────────────────────────────────────────
     group_ids = [g.id for g in GROUPS]
+
+    # Violation tracker: (chat_id, user_id) → [timestamp, timestamp, ...]
+    _violation_log: dict = {}
+    _STRIKE_LIMIT   = 5      # strikes before kick
+    _STRIKE_WINDOW  = 300    # 5 minutes in seconds
 
     # Words that accuse or attack the group — deleted from regular members
     BAD_KEYWORDS = [
@@ -1797,6 +1802,26 @@ async def start_bot():
             name = getattr(sender, 'first_name', str(sender_id)) if sender else str(sender_id)
             chat_title = getattr(event.chat, 'title', str(event.chat_id))
             logger.info(f"[Guard] 🗑 Deleted ({reason}) from '{name}' in '{chat_title}'")
+
+            # ── Strike tracking ───────────────────────────────────────────
+            key = (event.chat_id, sender_id)
+            now_ts = time_mod.time()
+            strikes = _violation_log.get(key, [])
+            # Keep only strikes within the last 5 minutes
+            strikes = [t for t in strikes if now_ts - t < _STRIKE_WINDOW]
+            strikes.append(now_ts)
+            _violation_log[key] = strikes
+            strike_count = len(strikes)
+            logger.info(f"[Guard] ⚠️ {name} strike {strike_count}/{_STRIKE_LIMIT} in '{chat_title}'")
+
+            if strike_count >= _STRIKE_LIMIT:
+                # Kick the user
+                _violation_log.pop(key, None)  # reset their record
+                try:
+                    await bot_client.kick_participant(event.chat_id, sender_id)
+                    logger.info(f"[Guard] 🚫 Kicked '{name}' from '{chat_title}' after {_STRIKE_LIMIT} strikes")
+                except Exception as kick_err:
+                    logger.error(f"[Guard] Failed to kick '{name}': {kick_err}")
         except Exception as exc:
             logger.error(f"[Guard] Error: {exc}")
 
