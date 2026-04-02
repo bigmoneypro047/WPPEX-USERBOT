@@ -187,7 +187,7 @@ STYLE = """
 PHONE_PAGE = STYLE + """
 <div class="card">
   <div class="logo">🤖</div>
-  <h1>WPPEX USERBOT Setup</h1>
+  <h1>PROFESSOR Setup</h1>
   <p>Enter the phone number linked to your Telegram account. You will receive an SMS verification code.</p>
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
   <form method="POST" action="/send-code">
@@ -245,7 +245,7 @@ SESSION_PAGE = STYLE + """
 RUNNING_PAGE = STYLE + """
 <div class="card">
   <div class="logo">🚀</div>
-  <h1>WPPEX USERBOT</h1>
+  <h1>PROFESSOR</h1>
   <div class="success"><span class="status-dot"></span>Bot is active and sending messages on schedule</div>
   <p style="margin-top:16px"><strong>Daily Schedule (Nigeria Time / WAT)</strong></p>
   <p style="margin-top:14px; line-height:2.2">
