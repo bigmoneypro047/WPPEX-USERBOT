@@ -348,8 +348,9 @@ bot_client = None
 
 
 async def lock_all_groups(label: str):
-    logger.info(f"[{label}] Locking all groups...")
+    logger.info(f"[{label}] Locking {len(GROUPS)} group(s)...")
     for group in GROUPS:
+        title = getattr(group, 'title', str(group.id))
         try:
             await bot_client(EditChatDefaultBannedRightsRequest(
                 peer=group,
@@ -364,15 +365,16 @@ async def lock_all_groups(label: str):
                     embed_links=True,
                 )
             ))
-            logger.info(f"[{label}] 🔒 Locked {group}")
+            logger.info(f"[{label}] 🔒 Locked '{title}'")
             await asyncio.sleep(2)
         except Exception as e:
-            logger.error(f"[{label}] ✗ Failed to lock {group}: {e}")
+            logger.error(f"[{label}] ✗ Failed to lock '{title}': {type(e).__name__}: {e}")
 
 
 async def unlock_all_groups(label: str):
-    logger.info(f"[{label}] Unlocking all groups...")
+    logger.info(f"[{label}] Unlocking {len(GROUPS)} group(s)...")
     for group in GROUPS:
+        title = getattr(group, 'title', str(group.id))
         try:
             await bot_client(EditChatDefaultBannedRightsRequest(
                 peer=group,
@@ -387,10 +389,10 @@ async def unlock_all_groups(label: str):
                     embed_links=False,
                 )
             ))
-            logger.info(f"[{label}] 🔓 Unlocked {group}")
+            logger.info(f"[{label}] 🔓 Unlocked '{title}'")
             await asyncio.sleep(2)
         except Exception as e:
-            logger.error(f"[{label}] ✗ Failed to unlock {group}: {e}")
+            logger.error(f"[{label}] ✗ Failed to unlock '{title}': {type(e).__name__}: {e}")
 
 
 async def send_to_all_groups(message: str, label: str):
@@ -475,36 +477,58 @@ def run_scheduler():
         time_mod.sleep(30)
 
 
+def raw_id(val: str) -> int:
+    """Strip any -100 prefix and return the bare positive channel ID."""
+    v = val.strip().lstrip("-")
+    if v.startswith("100") and len(v) > 12:
+        v = v[3:]
+    return int(v)
+
+
+async def resolve_groups():
+    """Scan account dialogs to find the 3 target groups by their ID."""
+    global GROUPS
+    target_ids = {raw_id(r) for r in RAW_GROUPS}
+    logger.info(f"[Startup] Looking for group IDs: {target_ids}")
+    found = {}
+    async for dialog in bot_client.iter_dialogs():
+        eid = dialog.entity.id
+        if eid in target_ids:
+            found[eid] = dialog.entity
+            logger.info(f"[Startup] ✓ Found: '{dialog.title}' (id={eid})")
+        if len(found) == len(target_ids):
+            break
+    GROUPS.clear()
+    # Keep same order as RAW_GROUPS
+    for r in RAW_GROUPS:
+        rid = raw_id(r)
+        if rid in found:
+            GROUPS.append(found[rid])
+        else:
+            logger.error(f"[Startup] ✗ Group ID {rid} NOT found in account dialogs — "
+                         f"make sure the logged-in account is a member of that group!")
+    logger.info(f"[Startup] {len(GROUPS)}/3 groups ready for lock/unlock/send.")
+
+
 async def start_bot():
-    global bot_client, GROUPS
+    global bot_client
     bot_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
     await bot_client.connect()
     if not await bot_client.is_user_authorized():
         logger.error("Session not authorized! Visit the web URL to re-authenticate.")
         return
     me = await bot_client.get_me()
-    logger.info(f"=== Bot logged in as: {me.first_name} (@{me.username}) ===")
+    logger.info(f"=== PROFESSOR online as: {me.first_name} (@{me.username}) ===")
 
-    # Resolve all group entities at startup so Telethon can use them reliably
-    GROUPS.clear()
-    for raw in RAW_GROUPS:
-        try:
-            # Try as integer ID first (with -100 prefix for supergroups)
-            if raw.lstrip("-").isdigit():
-                n = int(raw)
-                peer_id = n if n < 0 else int(f"-100{n}")
-            else:
-                peer_id = raw
-            entity = await bot_client.get_entity(peer_id)
-            GROUPS.append(entity)
-            logger.info(f"[Startup] ✓ Resolved group: {getattr(entity, 'title', peer_id)} (id={entity.id})")
-        except Exception as e:
-            logger.error(f"[Startup] ✗ Could not resolve group '{raw}': {e}")
+    await resolve_groups()
 
     if not GROUPS:
-        logger.error("[Startup] No groups resolved — check TELEGRAM_GROUP_1/2/3 values!")
-    else:
-        logger.info(f"[Startup] {len(GROUPS)}/3 groups ready.")
+        logger.error("[Startup] FATAL: 0 groups resolved. Bot will not send or lock anything.")
+        return
+
+    # Quick connectivity test — log group titles
+    for g in GROUPS:
+        logger.info(f"[Startup] Ready to operate in: '{g.title}'")
 
     sched_thread = threading.Thread(target=run_scheduler, daemon=True)
     sched_thread.start()
