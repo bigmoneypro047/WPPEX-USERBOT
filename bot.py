@@ -400,19 +400,45 @@ def test_send():
 
 @app.route("/test-promo")
 def test_promo():
-    """Immediately fire one promo conversation to verify member bots are working."""
+    """Immediately fire one promo conversation — bypasses lock guard for testing."""
     if not MEMBER_CLIENTS:
         return (
             "❌ No member bots connected. Check MEMBER_SESSION_1-4 are set in Render "
             "and that the accounts are members of the groups.", 400
         )
-    fire_promo()
+    # Fire a test session that ignores the lock-window guard
+    asyncio.run_coroutine_threadsafe(_fire_promo_session(bypass_lock_guard=True), _loop)
     n = len(MEMBER_CLIENTS)
+    grp_counts = [len(g) for _, g in MEMBER_CLIENTS]
     return (
-        f"✅ Promo conversation triggered with {n} member bot(s). "
-        "Check your Telegram groups — messages will appear over the next 8-15 minutes "
-        "(natural delays between each message)."
+        f"✅ Test triggered — {n} member bot(s) connected, "
+        f"groups per bot: {grp_counts}. "
+        "Messages will appear in ~10 min intervals per group. "
+        "Each group gets its own independent conversation."
     ), 200
+
+
+@app.route("/member-debug")
+def member_debug():
+    """Show detailed status of each member bot and their resolved groups."""
+    from datetime import datetime as _dt
+    now_wat = _dt.now(NIGERIA_TZ)
+    lock_active = _near_lock_window(warn_minutes=25)
+    lines = [
+        f"<b>Time (WAT):</b> {now_wat.strftime('%H:%M:%S')}",
+        f"<b>Lock guard active:</b> {'⛔ YES — promo blocked' if lock_active else '✅ NO — promo allowed'}",
+        f"<b>Member bots in MEMBER_CLIENTS:</b> {len(MEMBER_CLIENTS)}",
+        "<hr>",
+    ]
+    for i, (client, groups) in enumerate(MEMBER_CLIENTS):
+        grp_names = [getattr(g, 'title', str(g.id)) for g in groups]
+        lines.append(
+            f"<b>Bot {i+1}:</b> {len(groups)}/3 groups → "
+            + (", ".join(grp_names) if grp_names else "⚠️ NO GROUPS FOUND")
+        )
+    if not MEMBER_CLIENTS:
+        lines.append("⚠️ No member bots connected at all.")
+    return "<br>".join(lines), 200
 
 
 @app.route("/member-setup")
@@ -1099,7 +1125,7 @@ def _pick_promo_topic(exclude_topic: str = "") -> tuple:
     return (tid, avail)
 
 
-async def _fire_promo_for_group(target_group):
+async def _fire_promo_for_group(target_group, bypass_lock_guard: bool = False):
     """
     Fire an independent topic-based conversation in a SINGLE group.
     - Picks its own topic (independent of other groups)
@@ -1111,6 +1137,7 @@ async def _fire_promo_for_group(target_group):
                      35% send without tag (content still on-topic)
                      30% standalone statement (no reference to previous)
     - 10-min gap between each bot turn
+    - bypass_lock_guard=True skips the lock-window safety check (for /test-promo)
     """
     # ── Pick topic ────────────────────────────────────────────────────────────
     topic_id, avail_msgs = _pick_promo_topic()
@@ -1184,7 +1211,7 @@ async def _fire_promo_for_group(target_group):
             fresh_thread = True
 
         # Safety guard — abort the whole conversation if a lock window is near
-        if _near_lock_window(warn_minutes=25):
+        if not bypass_lock_guard and _near_lock_window(warn_minutes=25):
             grp_title = getattr(target_group, 'title', target_group.id)
             logger.info(f"[Promo] '{grp_title}' — approaching lock window, stopping conversation.")
             return
@@ -1210,20 +1237,33 @@ async def _fire_promo_for_group(target_group):
             await asyncio.sleep(random.uniform(560, 640))
 
 
-async def _fire_promo_session():
+async def _fire_promo_session(bypass_lock_guard: bool = False):
     """
     Kick off 3 independent promo conversations — one per group.
     Each group gets its own topic, its own bot order and its own start time
     so the 3 groups look completely unrelated to each other.
+    bypass_lock_guard=True skips the lock-window safety check (used by /test-promo).
     """
     if not MEMBER_CLIENTS:
         logger.warning("[Promo] No member bots connected — skipping.")
         return
 
-    _, all_groups = MEMBER_CLIENTS[0]
+    # Collect all unique groups across ALL member bots (not just bot 0)
+    seen_ids: set = set()
+    all_groups = []
+    for _, groups in MEMBER_CLIENTS:
+        for g in groups:
+            bid = _bare_id(g.id)
+            if bid not in seen_ids:
+                seen_ids.add(bid)
+                all_groups.append(g)
+
     if not all_groups:
-        logger.warning("[Promo] No groups found on member bot 1.")
+        logger.warning("[Promo] No groups found across any member bot.")
         return
+
+    logger.info(f"[Promo] Firing for {len(all_groups)} group(s): "
+                f"{[getattr(g,'title',g.id) for g in all_groups]}")
 
     # Stagger each group's conversation by 0–20 min so they don't start together
     stagger_seconds = sorted(random.uniform(0, 1200) for _ in range(len(all_groups)))
@@ -1231,7 +1271,7 @@ async def _fire_promo_session():
     async def delayed_promo(group, delay):
         if delay > 0:
             await asyncio.sleep(delay)
-        await _fire_promo_for_group(group)
+        await _fire_promo_for_group(group, bypass_lock_guard=bypass_lock_guard)
 
     await asyncio.gather(
         *[delayed_promo(g, s) for g, s in zip(all_groups, stagger_seconds)]
