@@ -462,6 +462,48 @@ def get_utc(nigeria_h, nigeria_m):
     return target.astimezone(pytz.utc).strftime("%H:%M")
 
 
+async def catch_up_on_startup():
+    """Fire any jobs missed within the last 10 minutes due to a restart."""
+    now = datetime.now(NIGERIA_TZ)
+    now_total = now.hour * 60 + now.minute
+    WINDOW = 10  # minutes
+
+    tasks = [
+        (3,  0,  lambda: morning_unlock_with_greeting(),               "Morning Unlock"),
+        (3, 30,  lambda: lock_all_groups("Extra Signal"),               "Extra Signal Lock"),
+        (3, 50,  lambda: send_to_all_groups(MSG_350AM, "Extra Signal"), "Extra Signal Warning"),
+        (4,  0,  lambda: send_to_all_groups(MSG_400AM, "Extra Signal"), "Extra Signal Instructions"),
+        (4,  5,  lambda: unlock_all_groups("Extra Signal"),             "Extra Signal Unlock"),
+        (11, 30, lambda: lock_all_groups("First Basic Signal"),          "First Signal Lock"),
+        (11, 50, lambda: send_to_all_groups(MSG_1150AM, "First Basic Signal"), "First Signal Warning"),
+        (12,  0, lambda: send_to_all_groups(MSG_1200PM, "First Basic Signal"), "First Signal Instructions"),
+        (12,  5, lambda: unlock_all_groups("First Basic Signal"),        "First Signal Unlock"),
+        (13, 30, lambda: lock_all_groups("Second Basic Signal"),         "Second Signal Lock"),
+        (13, 50, lambda: send_to_all_groups(MSG_150PM, "Second Basic Signal"), "Second Signal Warning"),
+        (14,  0, lambda: send_to_all_groups(MSG_200PM, "Second Basic Signal"), "Second Signal Instructions"),
+        (14,  5, lambda: unlock_all_groups("Second Basic Signal"),       "Second Signal Unlock"),
+        (17,  0, lambda: lock_all_groups("Night Lock"),                  "Night Lock"),
+    ]
+
+    caught = []
+    for (th, tm, factory, label) in tasks:
+        task_total = th * 60 + tm
+        if 0 < now_total - task_total <= WINDOW:
+            caught.append((label, factory))
+
+    if not caught:
+        logger.info("[CatchUp] No missed jobs detected.")
+        return
+
+    for label, factory in caught:
+        logger.info(f"[CatchUp] ⚡ Replaying missed job: {label}")
+        try:
+            await factory()
+            await asyncio.sleep(2)
+        except Exception as e:
+            logger.error(f"[CatchUp] ✗ {label}: {e}")
+
+
 def run_scheduler():
     # ── Morning unlock + greeting ────────────────────────────
     schedule.every().day.at(get_utc(3,  0)).do(fire_morning_unlock)
@@ -553,6 +595,9 @@ async def start_bot():
     # Quick connectivity test — log group titles
     for g in GROUPS:
         logger.info(f"[Startup] Ready to operate in: '{g.title}'")
+
+    # Catch up on any jobs missed while the bot was restarting
+    await catch_up_on_startup()
 
     sched_thread = threading.Thread(target=run_scheduler, daemon=True)
     sched_thread.start()
