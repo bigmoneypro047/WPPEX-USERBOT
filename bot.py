@@ -618,6 +618,12 @@ async def resolve_groups():
     target_ids = {}
     for raw in RAW_GROUPS:
         n = abs(int(raw.strip()))
+        s = str(n)
+        # Env vars may be stored with a "100" prefix (e.g. 1003257839303)
+        # but Telethon returns the bare ID without it (e.g. 3257839303).
+        # Strip the prefix so they match.
+        if s.startswith("100") and len(s) > 12:
+            n = int(s[3:])
         target_ids[n] = raw.strip()
     logger.info(f"[Startup] Looking for group IDs: {list(target_ids.keys())}")
 
