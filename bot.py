@@ -27,20 +27,8 @@ FLASK_SECRET = os.environ.get("SESSION_SECRET", "wppex-secret-2024")
 PORT = int(os.environ.get("PORT", 10000))
 
 NIGERIA_TZ = pytz.timezone("Africa/Lagos")
-
-
-def format_group_id(g: str) -> str:
-    """Ensure supergroup IDs have the -100 prefix Telethon requires."""
-    g = g.strip()
-    if g.lstrip("-").isdigit():
-        n = int(g)
-        if n > 0:
-            return int(f"-100{n}")
-        return n
-    return g
-
-
-GROUPS = [format_group_id(GROUP_1), format_group_id(GROUP_2), format_group_id(GROUP_3)]
+RAW_GROUPS = [GROUP_1.strip(), GROUP_2.strip(), GROUP_3.strip()]
+GROUPS = []          # filled with resolved InputPeerChannel objects at startup
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET
@@ -482,7 +470,7 @@ def run_scheduler():
 
 
 async def start_bot():
-    global bot_client
+    global bot_client, GROUPS
     bot_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
     await bot_client.connect()
     if not await bot_client.is_user_authorized():
@@ -490,6 +478,28 @@ async def start_bot():
         return
     me = await bot_client.get_me()
     logger.info(f"=== Bot logged in as: {me.first_name} (@{me.username}) ===")
+
+    # Resolve all group entities at startup so Telethon can use them reliably
+    GROUPS.clear()
+    for raw in RAW_GROUPS:
+        try:
+            # Try as integer ID first (with -100 prefix for supergroups)
+            if raw.lstrip("-").isdigit():
+                n = int(raw)
+                peer_id = n if n < 0 else int(f"-100{n}")
+            else:
+                peer_id = raw
+            entity = await bot_client.get_entity(peer_id)
+            GROUPS.append(entity)
+            logger.info(f"[Startup] ✓ Resolved group: {getattr(entity, 'title', peer_id)} (id={entity.id})")
+        except Exception as e:
+            logger.error(f"[Startup] ✗ Could not resolve group '{raw}': {e}")
+
+    if not GROUPS:
+        logger.error("[Startup] No groups resolved — check TELEGRAM_GROUP_1/2/3 values!")
+    else:
+        logger.info(f"[Startup] {len(GROUPS)}/3 groups ready.")
+
     sched_thread = threading.Thread(target=run_scheduler, daemon=True)
     sched_thread.start()
     await bot_client.run_until_disconnected()
