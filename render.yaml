@@ -1,0 +1,19 @@
+services:
+  - type: worker
+    name: wppex-userbot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: TELEGRAM_API_ID
+        sync: false
+      - key: TELEGRAM_API_HASH
+        sync: false
+      - key: TELEGRAM_PHONE
+        sync: false
+      - key: TELEGRAM_GROUP_1
+        sync: false
+      - key: TELEGRAM_GROUP_2
+        sync: false
+      - key: TELEGRAM_GROUP_3
+        sync: false
