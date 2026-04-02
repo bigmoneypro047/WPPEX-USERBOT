@@ -56,7 +56,7 @@ def run_in_loop(coro, timeout=30):
 
 
 MSG_350AM = (
-    "**\U0001f4e2 Next, 5 Bonus signals will be released, members, please open your Wppex accounts and prepare to receive the transaction order! "
+    "**\U0001faa7 Next, 5 Bonus signals will be released, members, please open your Wppex accounts and prepare to receive the transaction order! "
     "Once the order is received, follow all trades immediately, each trade can only be copied once. \U0001f6a8\U0001f6a8**"
 )
 MSG_400AM = (
@@ -71,7 +71,7 @@ MSG_400AM = (
     "\U0001f6ab\U0001f6ab\U0001f6abPlease note: All members are strictly prohibited from making private trades at any time!**"
 )
 MSG_1150AM = (
-    "**\U0001f4e2 Next, first signal of the day is about to be released, members, please open your Wppex accounts and prepare to receive the transaction order! "
+    "**\U0001faa7 Next, first signal of the day is about to be released, members, please open your Wppex accounts and prepare to receive the transaction order! "
     "Once the order is received, copy the trade immediately . \U0001f6a8\U0001f6a8**"
 )
 MSG_1200PM = (
@@ -86,7 +86,7 @@ MSG_1200PM = (
     "\U0001f6ab\U0001f6ab\U0001f6abPlease note: All members are strictly prohibited from making private trades at any time!**"
 )
 MSG_150PM = (
-    "**\U0001f4e2 Next, second signal of the day is about to be released, members, please open your Wppex accounts and prepare to receive the transaction order! "
+    "**\U0001faa7 Next, second signal of the day is about to be released, members, please open your Wppex accounts and prepare to receive the transaction order! "
     "Once the order is received, copy the trade immediately . \U0001f6a8\U0001f6a8**"
 )
 MSG_200PM = (
