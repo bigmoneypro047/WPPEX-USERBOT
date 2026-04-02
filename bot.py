@@ -1038,6 +1038,50 @@ PROMO_TOPICS = {
 _ALL_PROMO_MSGS = [m for msgs in PROMO_TOPICS.values() for m in msgs]
 
 
+def _near_lock_window(warn_minutes: int = 25) -> bool:
+    """
+    Returns True if the current WAT time is:
+      - currently inside a signal lock window, OR
+      - within `warn_minutes` minutes of one starting.
+    Used to abort promo messages before they'd clash with a locked group.
+
+    Lock windows (WAT):
+      03:30 – 04:05  Extra Signal
+      11:30 – 12:05  First Basic Signal
+      13:30 – 14:05  Second Basic Signal
+      17:00 – 03:00  Night Lock (next day)
+    """
+    now = datetime.now(NIGERIA_TZ)
+    m   = now.hour * 60 + now.minute   # minutes since midnight WAT
+
+    # Define each window as (lock_start_min, unlock_min)
+    WINDOWS = [
+        (3*60+30,  4*60+5),    # Extra Signal
+        (11*60+30, 12*60+5),   # First Basic Signal
+        (13*60+30, 14*60+5),   # Second Basic Signal
+    ]
+    # Night lock spans midnight — check separately
+    night_start = 17*60   # 17:00
+    night_end   = 3*60    # 03:00 next day
+
+    for lock_start, lock_end in WINDOWS:
+        # Currently inside this lock window
+        if lock_start <= m < lock_end:
+            return True
+        # Approaching this lock window
+        if lock_start - warn_minutes <= m < lock_start:
+            return True
+
+    # Night lock: locked from 17:00 to 03:00
+    if m >= night_start or m < night_end:
+        return True
+    # Approaching night lock
+    if night_start - warn_minutes <= m < night_start:
+        return True
+
+    return False
+
+
 def _pick_promo_topic(exclude_topic: str = "") -> tuple:
     """Return (topic_id, shuffled_available_messages) for one independent group session."""
     candidates = []
@@ -1138,6 +1182,12 @@ async def _fire_promo_for_group(target_group):
         # Mark if this message is a topic change (next msg starts fresh)
         if topic_change_idx is not None and i == topic_change_idx:
             fresh_thread = True
+
+        # Safety guard — abort the whole conversation if a lock window is near
+        if _near_lock_window(warn_minutes=25):
+            grp_title = getattr(target_group, 'title', target_group.id)
+            logger.info(f"[Promo] '{grp_title}' — approaching lock window, stopping conversation.")
+            return
 
         try:
             sent = await client.send_message(group_entity, text, reply_to=reply_to)
@@ -1482,21 +1532,24 @@ def run_scheduler():
     schedule.every().day.at(get_utc(14, 14)).do(fire_mbr, 2, random.choice(DONE_MSGS), "Done-Second-MBR")
     schedule.every().day.at(get_utc(14, 16)).do(fire_mbr, 3, random.choice(DONE_MSGS), "Done-Second-MBR")
 
-    # ── Promo conversations — every ~2 hours while group is open ──────────────
-    # Morning window (3:00–3:30 AM) — short, just one session
-    schedule.every().day.at(get_utc(3,  15)).do(fire_promo)
-    # Long open window (4:05 AM – 11:30 AM) — every ~90 mins
-    schedule.every().day.at(get_utc(4,  35)).do(fire_promo)
-    schedule.every().day.at(get_utc(5,  45)).do(fire_promo)
-    schedule.every().day.at(get_utc(7,   0)).do(fire_promo)
-    schedule.every().day.at(get_utc(9,   0)).do(fire_promo)
-    schedule.every().day.at(get_utc(10, 45)).do(fire_promo)
-    # After first signal unlock (12:05 PM – 13:30 PM)
-    schedule.every().day.at(get_utc(12, 35)).do(fire_promo)
-    schedule.every().day.at(get_utc(13, 10)).do(fire_promo)
-    # After second signal unlock (14:05 PM – 17:00 PM)
-    schedule.every().day.at(get_utc(14, 35)).do(fire_promo)
-    schedule.every().day.at(get_utc(16,  0)).do(fire_promo)
+    # ── Promo conversations — only within safe open windows ───────────────────
+    # Conflicts avoided: lock at 3:30 AM, 11:30 AM, 1:30 PM, 5:00 PM (night)
+    # Rule: session start + 90 min (max stagger+messages) must finish before lock
+    #
+    # Long open window (4:05 AM – 11:22 AM):
+    #   → last safe start = 11:22 - 90min = 09:52 AM, so stop at 10:00 AM
+    schedule.every().day.at(get_utc(4,  35)).do(fire_promo)   # 4:35 AM WAT
+    schedule.every().day.at(get_utc(5,  45)).do(fire_promo)   # 5:45 AM WAT
+    schedule.every().day.at(get_utc(7,   0)).do(fire_promo)   # 7:00 AM WAT
+    schedule.every().day.at(get_utc(9,   0)).do(fire_promo)   # 9:00 AM WAT
+    schedule.every().day.at(get_utc(10,  0)).do(fire_promo)   # 10:00 AM WAT (clears 11:22 ready by ~90min)
+    #
+    # Post-first-signal window (12:05 PM – 13:22 PM) = only 77 min — too tight, skipped
+    #
+    # Post-second-signal window (14:05 PM – 17:00 PM):
+    #   → last safe start = 17:00 - 90min = 15:30 PM
+    schedule.every().day.at(get_utc(14, 35)).do(fire_promo)   # 2:35 PM WAT
+    schedule.every().day.at(get_utc(15, 30)).do(fire_promo)   # 3:30 PM WAT (finishes by ~4:40 PM ✓)
 
     # ── Afternoon general chat ────────────────────────────────────────────────
     schedule.every().day.at(get_utc(15, 30)).do(fire_mbr, 1, random.choice(GENERAL_MSGS), "General-MBR")
