@@ -291,6 +291,41 @@ def test_unlock():
     return "🔓 Unlock triggered — check Render logs for result.", 200
 
 
+@app.route("/debug-groups")
+def debug_groups():
+    """List every dialog visible to the bot account — useful for diagnosing group resolution failures."""
+    if not SESSION_STRING:
+        return "Bot not running — no session string set.", 400
+
+    result_holder = {"lines": None, "error": None}
+
+    async def _collect():
+        lines = []
+        for folder in (0, 1):
+            label = "MAIN" if folder == 0 else "ARCHIVED"
+            try:
+                async for dialog in bot_client.iter_dialogs(folder=folder):
+                    eid = getattr(dialog.entity, 'id', '?')
+                    lines.append(f"[{label}] id={eid}  name={dialog.title}")
+            except Exception as e:
+                lines.append(f"[{label}] ERROR scanning folder {folder}: {e}")
+        result_holder["lines"] = lines
+
+    fut = asyncio.run_coroutine_threadsafe(_collect(), _loop)
+    fut.result(timeout=30)
+
+    lines = result_holder["lines"] or []
+    target_ids = [abs(int(r.strip())) for r in RAW_GROUPS]
+    header = (
+        f"Bot account dialogs ({len(lines)} total)\n"
+        f"Looking for IDs: {target_ids}\n"
+        f"Groups resolved so far: {len(GROUPS)}/3\n"
+        f"{'='*60}\n"
+    )
+    body = "\n".join(lines) if lines else "(no dialogs found)"
+    return f"<pre>{header}{body}</pre>", 200
+
+
 @app.route("/test-send")
 def test_send():
     if not SESSION_STRING:
@@ -574,15 +609,12 @@ def raw_id(val: str) -> int:
 
 async def resolve_groups():
     """
-    Fetch all account dialogs and match against the configured group IDs.
-    This is the most reliable method — avoids get_entity() cache issues entirely.
+    Scan all account dialogs (main folder + archived folder) to find the
+    3 configured groups. Avoids get_entity() cache issues with StringSession.
     """
     global GROUPS
     GROUPS.clear()
 
-    # Build a set of target IDs.
-    # Env vars hold the raw positive channel ID (e.g. 1003257839303).
-    # Telethon's dialog.entity.id also returns the raw positive ID, so match directly.
     target_ids = {}
     for raw in RAW_GROUPS:
         n = abs(int(raw.strip()))
@@ -590,21 +622,36 @@ async def resolve_groups():
     logger.info(f"[Startup] Looking for group IDs: {list(target_ids.keys())}")
 
     found = {}
-    logger.info("[Startup] Scanning all account dialogs...")
-    async for dialog in bot_client.iter_dialogs():
-        eid = getattr(dialog.entity, 'id', None)
-        if eid in target_ids:
-            found[eid] = dialog.entity
-            logger.info(f"[Startup] ✓ Found group: '{dialog.title}' (id={eid})")
+
+    # Scan folder 0 (main inbox) then folder 1 (archived)
+    for folder in (0, 1):
         if len(found) == len(target_ids):
             break
+        label = "main inbox" if folder == 0 else "archived folder"
+        logger.info(f"[Startup] Scanning {label}...")
+        try:
+            async for dialog in bot_client.iter_dialogs(folder=folder):
+                eid = getattr(dialog.entity, 'id', None)
+                if eid is not None:
+                    if eid in target_ids:
+                        found[eid] = dialog.entity
+                        logger.info(
+                            f"[Startup] ✓ Found '{dialog.title}' "
+                            f"(id={eid}, folder={folder})"
+                        )
+                    if len(found) == len(target_ids):
+                        break
+        except Exception as e:
+            logger.warning(f"[Startup] Could not scan folder {folder}: {e}")
 
     for n, raw in target_ids.items():
         if n in found:
             GROUPS.append(found[n])
         else:
-            logger.error(f"[Startup] ✗ Group {raw} (id={n}) not found — "
-                         f"is @cardon_js a member of this group?")
+            logger.error(
+                f"[Startup] ✗ Group ID {raw} not found in any folder. "
+                f"Is @cardon_js still a member/admin of this group?"
+            )
 
     logger.info(f"[Startup] {len(GROUPS)}/3 groups ready.")
 
