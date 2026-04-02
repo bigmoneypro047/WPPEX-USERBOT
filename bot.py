@@ -275,6 +275,22 @@ def ping():
     return "pong", 200
 
 
+@app.route("/test-lock")
+def test_lock():
+    if not SESSION_STRING:
+        return "Bot not running — no session string set.", 400
+    asyncio.run_coroutine_threadsafe(lock_all_groups("MANUAL TEST"), _loop)
+    return "🔒 Lock triggered — check Render logs for result.", 200
+
+
+@app.route("/test-unlock")
+def test_unlock():
+    if not SESSION_STRING:
+        return "Bot not running — no session string set.", 400
+    asyncio.run_coroutine_threadsafe(unlock_all_groups("MANUAL TEST"), _loop)
+    return "🔓 Unlock triggered — check Render logs for result.", 200
+
+
 @app.route("/")
 def index():
     if SESSION_STRING:
@@ -352,8 +368,9 @@ async def lock_all_groups(label: str):
     for group in GROUPS:
         title = getattr(group, 'title', str(group.id))
         try:
+            peer = await bot_client.get_input_entity(group)
             await bot_client(EditChatDefaultBannedRightsRequest(
-                peer=group,
+                peer=peer,
                 banned_rights=ChatBannedRights(
                     until_date=None,
                     send_messages=True,
@@ -376,8 +393,9 @@ async def unlock_all_groups(label: str):
     for group in GROUPS:
         title = getattr(group, 'title', str(group.id))
         try:
+            peer = await bot_client.get_input_entity(group)
             await bot_client(EditChatDefaultBannedRightsRequest(
-                peer=group,
+                peer=peer,
                 banned_rights=ChatBannedRights(
                     until_date=None,
                     send_messages=False,
