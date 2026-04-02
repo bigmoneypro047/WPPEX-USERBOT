@@ -27,7 +27,20 @@ FLASK_SECRET = os.environ.get("SESSION_SECRET", "wppex-secret-2024")
 PORT = int(os.environ.get("PORT", 10000))
 
 NIGERIA_TZ = pytz.timezone("Africa/Lagos")
-GROUPS = [GROUP_1, GROUP_2, GROUP_3]
+
+
+def format_group_id(g: str) -> str:
+    """Ensure supergroup IDs have the -100 prefix Telethon requires."""
+    g = g.strip()
+    if g.lstrip("-").isdigit():
+        n = int(g)
+        if n > 0:
+            return int(f"-100{n}")
+        return n
+    return g
+
+
+GROUPS = [format_group_id(GROUP_1), format_group_id(GROUP_2), format_group_id(GROUP_3)]
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET
