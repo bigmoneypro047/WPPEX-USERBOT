@@ -1038,53 +1038,70 @@ PROMO_TOPICS = {
 _ALL_PROMO_MSGS = [m for msgs in PROMO_TOPICS.values() for m in msgs]
 
 
-async def _fire_promo_session():
-    """
-    Fire a natural topic-based conversation:
-    - All messages come from ONE chosen topic (stays coherent)
-    - Random non-consecutive bot ordering (e.g. 1→3→2→1→4→2)
-    - 60% of messages reply to the previous one in each group (Telegram reply tag)
-    - Optionally a second bot introduces a new topic mid-conversation
-    """
-    if not MEMBER_CLIENTS:
-        logger.warning("[Promo] No member bots connected — skipping.")
-        return
-
-    n_bots = len(MEMBER_CLIENTS)
-
-    # ── Pick a topic with available (not recently sent) messages ─────────────
-    topic_candidates = []
-    for topic_id, msgs in PROMO_TOPICS.items():
+def _pick_promo_topic(exclude_topic: str = "") -> tuple:
+    """Return (topic_id, shuffled_available_messages) for one independent group session."""
+    candidates = []
+    for tid, msgs in PROMO_TOPICS.items():
+        if tid == exclude_topic:
+            continue
         avail = _available_messages(msgs)
         if len(avail) >= 3:
-            topic_candidates.append((topic_id, avail))
-
-    if not topic_candidates:
-        # All topics exhausted — fall back to least-recently-sent across all topics
-        logger.warning("[Promo] All topics exhausted — using fallback pool.")
+            candidates.append((tid, avail))
+    if not candidates:
         avail = _available_messages(_ALL_PROMO_MSGS)
-        topic_candidates = [("fallback", avail)]
+        return ("fallback", avail)
+    tid, avail = random.choice(candidates)
+    random.shuffle(avail)
+    return (tid, avail)
 
-    topic_id, avail_msgs = random.choice(topic_candidates)
-    random.shuffle(avail_msgs)
 
-    count = random.randint(4, 6)
+async def _fire_promo_for_group(target_group):
+    """
+    Fire an independent topic-based conversation in a SINGLE group.
+    - Picks its own topic (independent of other groups)
+    - Picks its own bot order (random, non-consecutive)
+    - Reply behaviour:
+        * first message — always standalone (no tag)
+        * after a topic-change message — standalone (fresh thread start)
+        * otherwise  35% reply WITH Telegram tag
+                     35% send without tag (content still on-topic)
+                     30% standalone statement (no reference to previous)
+    - 10-min gap between each bot turn
+    """
+    # ── Pick topic ────────────────────────────────────────────────────────────
+    topic_id, avail_msgs = _pick_promo_topic()
+    count  = random.randint(4, 6)
     chosen = avail_msgs[:count]
 
-    # ── Optionally splice in one "topic change" message from a different topic ─
-    # (~30% chance, only if conversation is 5+ messages long)
+    # Optionally insert one topic-change message (~30% chance, 5+ msg sessions)
+    topic_change_idx = None
     if len(chosen) >= 5 and random.random() < 0.30:
         other_topics = [t for t in PROMO_TOPICS if t != topic_id]
         if other_topics:
-            new_topic_id = random.choice(other_topics)
-            new_avail    = _available_messages(PROMO_TOPICS[new_topic_id])
+            new_tid   = random.choice(other_topics)
+            new_avail = _available_messages(PROMO_TOPICS[new_tid])
             if new_avail:
-                change_msg = random.choice(new_avail)
-                insert_at  = random.randint(3, len(chosen) - 1)
-                chosen.insert(insert_at, change_msg)
-                logger.info(f"[Promo] Topic change at msg {insert_at+1}: {new_topic_id}")
+                change_msg       = random.choice(new_avail)
+                topic_change_idx = random.randint(3, len(chosen) - 1)
+                chosen.insert(topic_change_idx, change_msg)
+                logger.info(f"[Promo] '{getattr(target_group,'title',target_group.id)}' "
+                            f"topic change at pos {topic_change_idx}: {new_tid}")
 
-    # ── Build bot sequence: random, no same bot twice in a row ────────────────
+    # ── Find bots that have access to this specific group ────────────────────
+    bots_for_group = []
+    for bot_idx, (client, groups) in enumerate(MEMBER_CLIENTS):
+        for g in groups:
+            if _bare_id(g.id) == _bare_id(target_group.id):
+                bots_for_group.append((bot_idx, client, g))
+                break
+
+    if not bots_for_group:
+        logger.warning(f"[Promo] No bots have access to '{getattr(target_group,'title',target_group.id)}'")
+        return
+
+    n_bots = len(bots_for_group)
+
+    # ── Build bot sequence ────────────────────────────────────────────────────
     bot_seq = []
     for _ in range(len(chosen)):
         opts = list(range(n_bots))
@@ -1093,37 +1110,82 @@ async def _fire_promo_session():
         bot_seq.append(random.choice(opts))
 
     _mark_messages_sent(chosen)
-    logger.info(f"[Promo] Topic={topic_id} | {len(chosen)} msgs | bots={[b+1 for b in bot_seq]}")
+    logger.info(f"[Promo] '{getattr(target_group,'title',target_group.id)}' | "
+                f"topic={topic_id} | {len(chosen)} msgs | "
+                f"bots={[bots_for_group[b][0]+1 for b in bot_seq]}")
 
-    # ── Send with per-group reply tracking ────────────────────────────────────
-    # group_last_msg_id[group_id] = id of the last message sent in that group
-    group_last_id: dict = {}
+    # ── Send messages ─────────────────────────────────────────────────────────
+    last_msg_id    = None
+    fresh_thread   = False   # True right after a topic change
 
-    for i, (bot_idx, text) in enumerate(zip(bot_seq, chosen)):
-        client, groups = MEMBER_CLIENTS[bot_idx]
-        # First message never replies; subsequent messages reply ~60% of the time
-        use_reply = (i > 0) and (random.random() < 0.60)
+    for i, (slot, text) in enumerate(zip(bot_seq, chosen)):
+        _, client, group_entity = bots_for_group[slot]
+        bot_num = bots_for_group[slot][0] + 1
 
-        for g in groups:
-            reply_to = group_last_id.get(g.id) if use_reply else None
+        # Decide reply style
+        if i == 0 or fresh_thread:
+            reply_to   = None          # standalone — open new thread
+            fresh_thread = False
+        else:
+            r = random.random()
+            if r < 0.35 and last_msg_id:
+                reply_to = last_msg_id  # Telegram reply tag
+            elif r < 0.70:
+                reply_to = None         # on-topic but no tag
+            else:
+                reply_to = None         # standalone statement
+
+        # Mark if this message is a topic change (next msg starts fresh)
+        if topic_change_idx is not None and i == topic_change_idx:
+            fresh_thread = True
+
+        try:
+            sent = await client.send_message(group_entity, text, reply_to=reply_to)
+            last_msg_id = sent.id
+            logger.info(f"[Promo] Bot{bot_num} → '{getattr(target_group,'title',target_group.id)}'"
+                        + (" [tag]" if reply_to else ""))
+            await asyncio.sleep(1.5)
+        except FloodWaitError as e:
+            await asyncio.sleep(e.seconds + 2)
             try:
-                sent = await client.send_message(g, text, reply_to=reply_to)
-                group_last_id[g.id] = sent.id
-                logger.info(f"[Promo] Bot{bot_idx+1} → '{g.title}'"
-                            + (" (reply)" if reply_to else ""))
-                await asyncio.sleep(1.5)
-            except FloodWaitError as e:
-                await asyncio.sleep(e.seconds + 2)
-                try:
-                    sent = await client.send_message(g, text, reply_to=reply_to)
-                    group_last_id[g.id] = sent.id
-                except Exception:
-                    pass
-            except Exception as exc:
-                logger.error(f"[Promo] Bot{bot_idx+1} error: {exc}")
+                sent = await client.send_message(group_entity, text, reply_to=reply_to)
+                last_msg_id = sent.id
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.error(f"[Promo] Bot{bot_num} → '{getattr(target_group,'title',target_group.id)}': {exc}")
 
-        # Natural delay between turns (1.5 – 3.5 minutes)
-        await asyncio.sleep(random.uniform(90, 210))
+        # 10-minute gap between bot turns (natural group conversation pace)
+        if i < len(chosen) - 1:
+            await asyncio.sleep(random.uniform(560, 640))
+
+
+async def _fire_promo_session():
+    """
+    Kick off 3 independent promo conversations — one per group.
+    Each group gets its own topic, its own bot order and its own start time
+    so the 3 groups look completely unrelated to each other.
+    """
+    if not MEMBER_CLIENTS:
+        logger.warning("[Promo] No member bots connected — skipping.")
+        return
+
+    _, all_groups = MEMBER_CLIENTS[0]
+    if not all_groups:
+        logger.warning("[Promo] No groups found on member bot 1.")
+        return
+
+    # Stagger each group's conversation by 0–20 min so they don't start together
+    stagger_seconds = sorted(random.uniform(0, 1200) for _ in range(len(all_groups)))
+
+    async def delayed_promo(group, delay):
+        if delay > 0:
+            await asyncio.sleep(delay)
+        await _fire_promo_for_group(group)
+
+    await asyncio.gather(
+        *[delayed_promo(g, s) for g, s in zip(all_groups, stagger_seconds)]
+    )
 
 
 def fire_promo():
@@ -1344,11 +1406,11 @@ def run_scheduler():
     schedule.every().day.at(get_utc(3,  7)).do(fire_mbr, 2, random.choice(PROF_MORNING_REPLIES), "MorningReply-MBR")
     schedule.every().day.at(get_utc(3,  9)).do(fire_mbr, 3, random.choice(PROF_MORNING_REPLIES), "MorningReply-MBR")
 
-    # ── "Ready" before extra signal lock (3:28–3:29 AM WAT, lock at 3:30) ────
-    schedule.every().day.at(get_utc(3, 28)).do(fire_mbr, 0, random.choice(READY_MSGS), "Ready-Extra-MBR")
-    schedule.every().day.at(get_utc(3, 28)).do(fire_mbr, 1, random.choice(READY_MSGS), "Ready-Extra-MBR")
-    schedule.every().day.at(get_utc(3, 29)).do(fire_mbr, 2, random.choice(READY_MSGS), "Ready-Extra-MBR")
-    schedule.every().day.at(get_utc(3, 29)).do(fire_mbr, 3, random.choice(READY_MSGS), "Ready-Extra-MBR")
+    # ── "Ready" before extra signal lock (2 min apart each, lock at 3:30) ─────
+    schedule.every().day.at(get_utc(3, 22)).do(fire_mbr, 0, random.choice(READY_MSGS), "Ready-Extra-MBR")
+    schedule.every().day.at(get_utc(3, 24)).do(fire_mbr, 1, random.choice(READY_MSGS), "Ready-Extra-MBR")
+    schedule.every().day.at(get_utc(3, 26)).do(fire_mbr, 2, random.choice(READY_MSGS), "Ready-Extra-MBR")
+    schedule.every().day.at(get_utc(3, 28)).do(fire_mbr, 3, random.choice(READY_MSGS), "Ready-Extra-MBR")
 
     # ── Pre-extra-signal Q&A — once per week (Monday only) ───────────────────
     schedule.every().monday.at(get_utc(3, 46)).do(
@@ -1358,24 +1420,25 @@ def run_scheduler():
     schedule.every().monday.at(get_utc(3, 49)).do(
         fire_mbr, 1, random.choice(PRE_SIGNAL_CONFIRMS), "PreExtra-MBR")
 
-    # ── Post-extra-signal reactions + "Done" (4:02–4:11 AM WAT) ─────────────
+    # ── Post-extra-signal reactions + "Done" (2 min apart each) ─────────────
     schedule.every().day.at(get_utc(4,  2)).do(fire_mbr, 2, random.choice(SIGNAL_REACTIONS), "PostExtra-MBR")
     schedule.every().day.at(get_utc(4,  4)).do(fire_mbr, 3, random.choice(SIGNAL_REACTIONS), "PostExtra-MBR")
-    schedule.every().day.at(get_utc(4,  8)).do(fire_mbr, 0, random.choice(SIGNAL_REACTIONS), "PostExtra-MBR")
-    schedule.every().day.at(get_utc(4, 10)).do(fire_mbr, 1, random.choice(DONE_MSGS), "Done-Extra-MBR")
-    schedule.every().day.at(get_utc(4, 10)).do(fire_mbr, 2, random.choice(DONE_MSGS), "Done-Extra-MBR")
-    schedule.every().day.at(get_utc(4, 11)).do(fire_mbr, 3, random.choice(DONE_MSGS), "Done-Extra-MBR")
-    schedule.every().day.at(get_utc(4, 11)).do(fire_mbr, 0, random.choice(DONE_MSGS), "Done-Extra-MBR")
+    schedule.every().day.at(get_utc(4,  6)).do(fire_mbr, 0, random.choice(SIGNAL_REACTIONS), "PostExtra-MBR")
+    schedule.every().day.at(get_utc(4,  8)).do(fire_mbr, 1, random.choice(SIGNAL_REACTIONS), "PostExtra-MBR")
+    schedule.every().day.at(get_utc(4, 10)).do(fire_mbr, 0, random.choice(DONE_MSGS), "Done-Extra-MBR")
+    schedule.every().day.at(get_utc(4, 12)).do(fire_mbr, 1, random.choice(DONE_MSGS), "Done-Extra-MBR")
+    schedule.every().day.at(get_utc(4, 14)).do(fire_mbr, 2, random.choice(DONE_MSGS), "Done-Extra-MBR")
+    schedule.every().day.at(get_utc(4, 16)).do(fire_mbr, 3, random.choice(DONE_MSGS), "Done-Extra-MBR")
 
     # ── General midday chat ───────────────────────────────────────────────────
     schedule.every().day.at(get_utc(8,  0)).do(fire_mbr, 1, random.choice(GENERAL_MSGS), "General-MBR")
     schedule.every().day.at(get_utc(10, 30)).do(fire_mbr, 3, random.choice(GENERAL_MSGS), "General-MBR")
 
-    # ── "Ready" before first signal lock (11:28–11:29 AM WAT, lock at 11:30) ─
-    schedule.every().day.at(get_utc(11, 28)).do(fire_mbr, 0, random.choice(READY_MSGS), "Ready-First-MBR")
-    schedule.every().day.at(get_utc(11, 28)).do(fire_mbr, 1, random.choice(READY_MSGS), "Ready-First-MBR")
-    schedule.every().day.at(get_utc(11, 29)).do(fire_mbr, 2, random.choice(READY_MSGS), "Ready-First-MBR")
-    schedule.every().day.at(get_utc(11, 29)).do(fire_mbr, 3, random.choice(READY_MSGS), "Ready-First-MBR")
+    # ── "Ready" before first signal lock (2 min apart each, lock at 11:30) ────
+    schedule.every().day.at(get_utc(11, 22)).do(fire_mbr, 0, random.choice(READY_MSGS), "Ready-First-MBR")
+    schedule.every().day.at(get_utc(11, 24)).do(fire_mbr, 1, random.choice(READY_MSGS), "Ready-First-MBR")
+    schedule.every().day.at(get_utc(11, 26)).do(fire_mbr, 2, random.choice(READY_MSGS), "Ready-First-MBR")
+    schedule.every().day.at(get_utc(11, 28)).do(fire_mbr, 3, random.choice(READY_MSGS), "Ready-First-MBR")
 
     # ── Pre-first-signal Q&A — once per week (Monday only) ──────────────────
     schedule.every().monday.at(get_utc(11, 41)).do(
@@ -1385,20 +1448,21 @@ def run_scheduler():
     schedule.every().monday.at(get_utc(11, 46)).do(
         fire_mbr, 0, random.choice(PRE_SIGNAL_CONFIRMS), "PreFirst-MBR")
 
-    # ── Post-first-signal reactions + "Done" (12:02–12:11 PM WAT) ───────────
+    # ── Post-first-signal reactions + "Done" (2 min apart each) ────────────
     schedule.every().day.at(get_utc(12,  2)).do(fire_mbr, 2, random.choice(SIGNAL_REACTIONS), "PostFirst-MBR")
     schedule.every().day.at(get_utc(12,  4)).do(fire_mbr, 1, random.choice(SIGNAL_REACTIONS), "PostFirst-MBR")
-    schedule.every().day.at(get_utc(12,  8)).do(fire_mbr, 0, random.choice(SIGNAL_REACTIONS), "PostFirst-MBR")
-    schedule.every().day.at(get_utc(12, 10)).do(fire_mbr, 3, random.choice(DONE_MSGS), "Done-First-MBR")
+    schedule.every().day.at(get_utc(12,  6)).do(fire_mbr, 0, random.choice(SIGNAL_REACTIONS), "PostFirst-MBR")
+    schedule.every().day.at(get_utc(12,  8)).do(fire_mbr, 3, random.choice(SIGNAL_REACTIONS), "PostFirst-MBR")
     schedule.every().day.at(get_utc(12, 10)).do(fire_mbr, 0, random.choice(DONE_MSGS), "Done-First-MBR")
-    schedule.every().day.at(get_utc(12, 11)).do(fire_mbr, 1, random.choice(DONE_MSGS), "Done-First-MBR")
-    schedule.every().day.at(get_utc(12, 11)).do(fire_mbr, 2, random.choice(DONE_MSGS), "Done-First-MBR")
+    schedule.every().day.at(get_utc(12, 12)).do(fire_mbr, 1, random.choice(DONE_MSGS), "Done-First-MBR")
+    schedule.every().day.at(get_utc(12, 14)).do(fire_mbr, 2, random.choice(DONE_MSGS), "Done-First-MBR")
+    schedule.every().day.at(get_utc(12, 16)).do(fire_mbr, 3, random.choice(DONE_MSGS), "Done-First-MBR")
 
-    # ── "Ready" before second signal lock (13:28–13:29 PM WAT, lock at 13:30) ─
-    schedule.every().day.at(get_utc(13, 28)).do(fire_mbr, 0, random.choice(READY_MSGS), "Ready-Second-MBR")
-    schedule.every().day.at(get_utc(13, 28)).do(fire_mbr, 1, random.choice(READY_MSGS), "Ready-Second-MBR")
-    schedule.every().day.at(get_utc(13, 29)).do(fire_mbr, 2, random.choice(READY_MSGS), "Ready-Second-MBR")
-    schedule.every().day.at(get_utc(13, 29)).do(fire_mbr, 3, random.choice(READY_MSGS), "Ready-Second-MBR")
+    # ── "Ready" before second signal lock (2 min apart each, lock at 13:30) ───
+    schedule.every().day.at(get_utc(13, 22)).do(fire_mbr, 0, random.choice(READY_MSGS), "Ready-Second-MBR")
+    schedule.every().day.at(get_utc(13, 24)).do(fire_mbr, 1, random.choice(READY_MSGS), "Ready-Second-MBR")
+    schedule.every().day.at(get_utc(13, 26)).do(fire_mbr, 2, random.choice(READY_MSGS), "Ready-Second-MBR")
+    schedule.every().day.at(get_utc(13, 28)).do(fire_mbr, 3, random.choice(READY_MSGS), "Ready-Second-MBR")
 
     # ── Pre-second-signal Q&A — once per week (Monday only) ─────────────────
     schedule.every().monday.at(get_utc(13, 41)).do(
@@ -1408,14 +1472,15 @@ def run_scheduler():
     schedule.every().monday.at(get_utc(13, 46)).do(
         fire_mbr, 1, random.choice(PRE_SIGNAL_CONFIRMS), "PreSecond-MBR")
 
-    # ── Post-second-signal reactions + "Done" (14:02–14:11 PM WAT) ──────────
+    # ── Post-second-signal reactions + "Done" (2 min apart each) ───────────
     schedule.every().day.at(get_utc(14,  2)).do(fire_mbr, 0, random.choice(SIGNAL_REACTIONS), "PostSecond-MBR")
     schedule.every().day.at(get_utc(14,  4)).do(fire_mbr, 3, random.choice(SIGNAL_REACTIONS), "PostSecond-MBR")
-    schedule.every().day.at(get_utc(14,  8)).do(fire_mbr, 2, random.choice(SIGNAL_REACTIONS), "PostSecond-MBR")
-    schedule.every().day.at(get_utc(14, 10)).do(fire_mbr, 1, random.choice(DONE_MSGS), "Done-Second-MBR")
-    schedule.every().day.at(get_utc(14, 10)).do(fire_mbr, 2, random.choice(DONE_MSGS), "Done-Second-MBR")
-    schedule.every().day.at(get_utc(14, 11)).do(fire_mbr, 3, random.choice(DONE_MSGS), "Done-Second-MBR")
-    schedule.every().day.at(get_utc(14, 11)).do(fire_mbr, 0, random.choice(DONE_MSGS), "Done-Second-MBR")
+    schedule.every().day.at(get_utc(14,  6)).do(fire_mbr, 2, random.choice(SIGNAL_REACTIONS), "PostSecond-MBR")
+    schedule.every().day.at(get_utc(14,  8)).do(fire_mbr, 1, random.choice(SIGNAL_REACTIONS), "PostSecond-MBR")
+    schedule.every().day.at(get_utc(14, 10)).do(fire_mbr, 0, random.choice(DONE_MSGS), "Done-Second-MBR")
+    schedule.every().day.at(get_utc(14, 12)).do(fire_mbr, 1, random.choice(DONE_MSGS), "Done-Second-MBR")
+    schedule.every().day.at(get_utc(14, 14)).do(fire_mbr, 2, random.choice(DONE_MSGS), "Done-Second-MBR")
+    schedule.every().day.at(get_utc(14, 16)).do(fire_mbr, 3, random.choice(DONE_MSGS), "Done-Second-MBR")
 
     # ── Promo conversations — every ~2 hours while group is open ──────────────
     # Morning window (3:00–3:30 AM) — short, just one session
@@ -1564,16 +1629,21 @@ async def start_bot():
 
 
 def keep_alive():
-    """Ping own /ping endpoint every 5 seconds so the service never sleeps."""
-    self_url = os.environ.get("RENDER_EXTERNAL_URL", f"http://localhost:{PORT}").rstrip("/")
-    ping_url = f"{self_url}/ping"
-    logger.info(f"[KeepAlive] Starting — pinging {ping_url} every 5 seconds")
+    """
+    Ping own /ping endpoint every 8 minutes so Render never spins the service down.
+    Also logs the heartbeat so we can confirm the bot is alive in the logs.
+    """
+    self_url  = os.environ.get("RENDER_EXTERNAL_URL", f"http://localhost:{PORT}").rstrip("/")
+    ping_url  = f"{self_url}/ping"
+    interval  = 480  # 8 minutes — well within Render's 15-min idle timeout
+    logger.info(f"[KeepAlive] Starting — pinging {ping_url} every {interval}s")
     while True:
+        time_mod.sleep(interval)
         try:
-            urllib.request.urlopen(ping_url, timeout=5)
-        except Exception:
-            pass
-        time_mod.sleep(5)
+            urllib.request.urlopen(ping_url, timeout=10)
+            logger.info("[KeepAlive] ✓ Heartbeat OK")
+        except Exception as e:
+            logger.warning(f"[KeepAlive] ✗ Ping failed: {e}")
 
 
 if __name__ == "__main__":
