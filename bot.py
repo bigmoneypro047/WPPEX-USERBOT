@@ -42,12 +42,34 @@ MEMBER_SESSIONS_RAW = [
     os.environ.get("MEMBER_SESSION_3", ""),
     os.environ.get("MEMBER_SESSION_4", ""),
 ]
+
+# Per-bot API credentials (each member account has its own Telegram app)
+MEMBER_CONFIGS = [
+    {
+        "api_id":   int(os.environ.get("MEMBER_1_API_ID",  os.environ.get("TELEGRAM_API_ID",  "0"))),
+        "api_hash":     os.environ.get("MEMBER_1_API_HASH", os.environ.get("TELEGRAM_API_HASH", "")),
+    },
+    {
+        "api_id":   int(os.environ.get("MEMBER_2_API_ID",  os.environ.get("TELEGRAM_API_ID",  "0"))),
+        "api_hash":     os.environ.get("MEMBER_2_API_HASH", os.environ.get("TELEGRAM_API_HASH", "")),
+    },
+    {
+        "api_id":   int(os.environ.get("MEMBER_3_API_ID",  os.environ.get("TELEGRAM_API_ID",  "0"))),
+        "api_hash":     os.environ.get("MEMBER_3_API_HASH", os.environ.get("TELEGRAM_API_HASH", "")),
+    },
+    {
+        "api_id":   int(os.environ.get("MEMBER_4_API_ID",  os.environ.get("TELEGRAM_API_ID",  "0"))),
+        "api_hash":     os.environ.get("MEMBER_4_API_HASH", os.environ.get("TELEGRAM_API_HASH", "")),
+    },
+]
+
 MEMBER_CLIENTS = []  # list of (TelegramClient, [group_entities]) tuples
 PROFESSOR_ID   = None  # set at startup so event handlers can exclude PROFESSOR
 
 # ── Member setup flow state ───────────────────────────────────────────────────
-_member_setup_client = None
+_member_setup_client   = None
 _member_phone_code_hash = None
+_member_setup_slot     = 1    # which bot number (1-4) is being set up right now
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET
@@ -379,23 +401,34 @@ def member_setup():
     connected  = len(MEMBER_CLIENTS)
     return render_template_string("""<!DOCTYPE html>
 <html><head><title>Member Bot Setup</title>
-<style>body{font-family:sans-serif;max-width:480px;margin:40px auto;padding:20px}
-input{width:100%;padding:10px;margin:8px 0;box-sizing:border-box;border:1px solid #ccc;border-radius:6px}
-button{width:100%;padding:12px;background:#2196F3;color:#fff;border:none;border-radius:6px;font-size:16px;cursor:pointer}
+<style>body{font-family:sans-serif;max-width:520px;margin:40px auto;padding:20px}
+input,select{width:100%;padding:10px;margin:8px 0;box-sizing:border-box;border:1px solid #ccc;border-radius:6px;font-size:15px}
+button{width:100%;padding:12px;background:#2196F3;color:#fff;border:none;border-radius:6px;font-size:16px;cursor:pointer;margin-top:6px}
 .info{background:#e8f5e9;padding:12px;border-radius:6px;margin-bottom:16px;font-size:14px}
 .warn{background:#fff3e0;padding:12px;border-radius:6px;margin-bottom:16px;font-size:14px}
+label{font-weight:600;font-size:14px;margin-top:8px;display:block}
 </style></head><body>
 <h2>🤖 Member Bot Login</h2>
 <div class="info">
-  Sessions configured: <b>{{ configured }}/4</b><br>
+  Sessions configured: <b>{{ configured }}/4</b> &nbsp;|&nbsp;
   Member bots connected: <b>{{ connected }}/4</b>
 </div>
-<div class="warn">Enter the phone number for one of the 4 member accounts.<br>
-After logging in you will get a session string — copy it and add it to Render as
-<b>MEMBER_SESSION_1</b>, <b>MEMBER_SESSION_2</b>, etc.</div>
+<div class="warn">
+  Select which bot number you are setting up, then enter that account's phone number.<br><br>
+  After logging in you will get a <b>session string</b> — copy it and add it to Render as<br>
+  <b>MEMBER_SESSION_1</b> / <b>MEMBER_SESSION_2</b> / etc.
+</div>
 {% if error %}<p style="color:red">{{ error }}</p>{% endif %}
 <form method="POST" action="/member-setup/send-code">
-  <input name="phone" type="tel" placeholder="+447911123456" required>
+  <label>Which bot are you setting up?</label>
+  <select name="bot_slot" required>
+    <option value="1">Bot 1 — +234 8156329118</option>
+    <option value="2">Bot 2 — +234 707 541 3215</option>
+    <option value="3">Bot 3 — +234 8112326091</option>
+    <option value="4">Bot 4 — +234 704 657 5560</option>
+  </select>
+  <label>Phone number (with country code)</label>
+  <input name="phone" type="tel" placeholder="+2348156329118" required>
   <button type="submit">Send Login Code</button>
 </form>
 </body></html>""", configured=configured, connected=connected, error=None)
@@ -403,22 +436,29 @@ After logging in you will get a session string — copy it and add it to Render 
 
 @app.route("/member-setup/send-code", methods=["POST"])
 def member_send_code():
-    global _member_setup_client, _member_phone_code_hash
-    phone = request.form.get("phone", "").strip()
+    global _member_setup_client, _member_phone_code_hash, _member_setup_slot
+    phone    = request.form.get("phone", "").strip()
+    bot_slot = int(request.form.get("bot_slot", "1"))
     if not phone:
         return "Phone number required.", 400
 
+    cfg = MEMBER_CONFIGS[bot_slot - 1]  # 0-indexed
+
     async def _send():
         global _member_setup_client, _member_phone_code_hash
-        _member_setup_client = TelegramClient(StringSession(), API_ID, API_HASH)
+        _member_setup_client = TelegramClient(
+            StringSession(), cfg["api_id"], cfg["api_hash"]
+        )
         await _member_setup_client.connect()
         result = await _member_setup_client.send_code_request(phone)
         _member_phone_code_hash = result.phone_code_hash
 
     try:
+        _member_setup_slot = bot_slot
         fut = asyncio.run_coroutine_threadsafe(_send(), _loop)
         fut.result(timeout=20)
-        session["member_phone"] = phone
+        session["member_phone"]    = phone
+        session["member_bot_slot"] = bot_slot
     except Exception as e:
         return f"Error sending code: {e}", 500
 
@@ -465,22 +505,31 @@ button{width:100%;padding:12px;background:#ff9800;color:#fff;border:none;border-
     except Exception as e:
         return f"Verification failed: {e}", 500
 
-    next_slot = sum(1 for s in MEMBER_SESSIONS_RAW if s.strip()) + 1
+    slot = session.get("member_bot_slot", _member_setup_slot)
     return render_template_string("""<!DOCTYPE html>
 <html><head><title>Member Session Ready</title>
 <style>body{font-family:sans-serif;max-width:540px;margin:40px auto;padding:20px}
-textarea{width:100%;height:100px;padding:10px;font-family:monospace;font-size:12px;box-sizing:border-box}
+textarea{width:100%;height:160px;padding:10px;font-family:monospace;font-size:12px;box-sizing:border-box}
 .box{background:#e8f5e9;padding:16px;border-radius:8px;margin-top:16px}
+button{padding:10px 20px;background:#4caf50;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px}
 </style></head><body>
-<h2>✅ Session generated!</h2>
+<h2>✅ Bot {{ slot }} session ready!</h2>
 <div class="box">
-  <b>Copy this session string and add it to Render as<br>
-  MEMBER_SESSION_{{ slot }}</b><br><br>
-  <textarea readonly>{{ sess }}</textarea>
+  <b>Step 1 — Copy this entire session string:</b><br><br>
+  <textarea id="sess" readonly>{{ sess }}</textarea><br>
+  <button onclick="navigator.clipboard.writeText(document.getElementById('sess').value)">📋 Copy to clipboard</button>
 </div>
-<p>After adding it to Render, redeploy and the member bot will connect automatically.</p>
-<p><a href="/member-setup">← Set up another member bot</a></p>
-</body></html>""", sess=sess_str, slot=next_slot)
+<br>
+<div class="box" style="background:#e3f2fd">
+  <b>Step 2 — Go to Render → wppex-userbot → Environment</b><br>
+  Add a new variable:<br><br>
+  Key: &nbsp;<b>MEMBER_SESSION_{{ slot }}</b><br>
+  Value: &nbsp;(paste the string above)
+</div>
+<br>
+<p>After adding all 4, click <b>Save Changes</b> and Render will redeploy automatically.</p>
+<p><a href="/member-setup">← Set up next member bot</a></p>
+</body></html>""", sess=sess_str, slot=slot)
 
 
 @app.route("/member-setup/verify-password", methods=["POST"])
@@ -498,20 +547,31 @@ def member_verify_password():
     except Exception as e:
         return f"2FA failed: {e}", 500
 
-    next_slot = sum(1 for s in MEMBER_SESSIONS_RAW if s.strip()) + 1
+    slot = session.get("member_bot_slot", _member_setup_slot)
     return render_template_string("""<!DOCTYPE html>
 <html><head><title>Member Session Ready</title>
 <style>body{font-family:sans-serif;max-width:540px;margin:40px auto;padding:20px}
-textarea{width:100%;height:100px;padding:10px;font-family:monospace;font-size:12px;box-sizing:border-box}
+textarea{width:100%;height:160px;padding:10px;font-family:monospace;font-size:12px;box-sizing:border-box}
 .box{background:#e8f5e9;padding:16px;border-radius:8px;margin-top:16px}
+button{padding:10px 20px;background:#4caf50;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px}
 </style></head><body>
-<h2>✅ Session generated!</h2>
+<h2>✅ Bot {{ slot }} session ready!</h2>
 <div class="box">
-  <b>Copy this and add to Render as MEMBER_SESSION_{{ slot }}</b><br><br>
-  <textarea readonly>{{ sess }}</textarea>
+  <b>Step 1 — Copy this entire session string:</b><br><br>
+  <textarea id="sess" readonly>{{ sess }}</textarea><br>
+  <button onclick="navigator.clipboard.writeText(document.getElementById('sess').value)">📋 Copy to clipboard</button>
 </div>
-<p><a href="/member-setup">← Set up another member bot</a></p>
-</body></html>""", sess=sess_str, slot=next_slot)
+<br>
+<div class="box" style="background:#e3f2fd">
+  <b>Step 2 — Go to Render → wppex-userbot → Environment</b><br>
+  Add a new variable:<br><br>
+  Key: &nbsp;<b>MEMBER_SESSION_{{ slot }}</b><br>
+  Value: &nbsp;(paste the string above)
+</div>
+<br>
+<p>After adding all 4, click <b>Save Changes</b> and Render will redeploy automatically.</p>
+<p><a href="/member-setup">← Set up next member bot</a></p>
+</body></html>""", sess=sess_str, slot=slot)
 
 
 @app.route("/")
@@ -917,7 +977,8 @@ async def start_member_bots():
             logger.info(f"[MemberBot {idx+1}] No session — skipping.")
             continue
         try:
-            client = TelegramClient(StringSession(sess.strip()), API_ID, API_HASH)
+            cfg    = MEMBER_CONFIGS[idx]
+            client = TelegramClient(StringSession(sess.strip()), cfg["api_id"], cfg["api_hash"])
             await client.connect()
             if not await client.is_user_authorized():
                 logger.warning(f"[MemberBot {idx+1}] Session not authorised — skipping.")
