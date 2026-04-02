@@ -291,6 +291,27 @@ def test_unlock():
     return "🔓 Unlock triggered — check Render logs for result.", 200
 
 
+@app.route("/test-send")
+def test_send():
+    if not SESSION_STRING:
+        return "Bot not running — no session string set.", 400
+    if not GROUPS:
+        return (
+            "❌ 0 groups resolved — check Render logs for startup errors. "
+            "The bot cannot find your groups yet.", 400
+        )
+    msg = (
+        "✅ *PROFESSOR TEST MESSAGE*\n\n"
+        "If you see this in all 3 groups, message sending is working correctly.\n\n"
+        f"Groups loaded: {len(GROUPS)}"
+    )
+    asyncio.run_coroutine_threadsafe(send_to_all_groups(msg, "TEST-SEND"), _loop)
+    return (
+        f"📨 Test message sent to {len(GROUPS)}/3 groups — "
+        f"check your Telegram groups now. Also check Render logs for confirmation.", 200
+    )
+
+
 @app.route("/")
 def index():
     if SESSION_STRING:
