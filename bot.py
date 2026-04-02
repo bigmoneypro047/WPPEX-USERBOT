@@ -856,7 +856,7 @@ GENERAL_MSGS = [
 
 # ── 30-day no-repeat message tracking ────────────────────────────────────────
 _SENT_HISTORY_FILE = Path("/tmp/qt_promo_sent.json")
-_PROMO_COOLDOWN    = 30 * 86400  # 30 days in seconds
+_PROMO_COOLDOWN    = 90 * 86400  # 90 days in seconds
 
 def _msg_key(msg: str) -> str:
     return hashlib.md5(msg.encode()).hexdigest()[:16]
