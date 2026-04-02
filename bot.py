@@ -586,6 +586,11 @@ async def start_bot():
     me = await bot_client.get_me()
     logger.info(f"=== PROFESSOR online as: {me.first_name} (@{me.username}) ===")
 
+    # Pre-populate the entity cache — required for StringSession to resolve groups
+    logger.info("[Startup] Loading dialogs to populate entity cache...")
+    await bot_client.get_dialogs(limit=None)
+    logger.info("[Startup] Entity cache ready. Resolving groups...")
+
     await resolve_groups()
 
     if not GROUPS:
