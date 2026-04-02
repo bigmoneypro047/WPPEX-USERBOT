@@ -1,5 +1,5 @@
 services:
-  - type: worker
+  - type: web
     name: wppex-userbot
     runtime: python
     buildCommand: pip install -r requirements.txt
@@ -16,4 +16,6 @@ services:
       - key: TELEGRAM_GROUP_2
         sync: false
       - key: TELEGRAM_GROUP_3
+        sync: false
+      - key: TELEGRAM_SESSION_STRING
         sync: false
