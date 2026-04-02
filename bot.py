@@ -398,6 +398,33 @@ def test_send():
         return "❌ No groups resolved yet — check Render logs for startup errors.", 400
 
 
+@app.route("/test-now")
+def test_now():
+    """Send ONE message from bot 1 directly to each group RIGHT NOW. Returns exact result."""
+    if not MEMBER_CLIENTS:
+        return "❌ No member bots connected.", 400
+
+    results = []
+
+    async def _do_send():
+        client, groups = MEMBER_CLIENTS[0]
+        me = await client.get_me()
+        for g in groups:
+            try:
+                sent = await client.send_message(g, "✅ Test message from member bot — system working!")
+                results.append(f"✅ Bot1 ({me.first_name}) → '{getattr(g,'title',g.id)}' — msg_id={sent.id}")
+            except Exception as e:
+                results.append(f"❌ Bot1 → '{getattr(g,'title',g.id)}' — ERROR: {type(e).__name__}: {e}")
+
+    fut = asyncio.run_coroutine_threadsafe(_do_send(), _loop)
+    try:
+        fut.result(timeout=30)
+    except Exception as e:
+        return f"❌ Execution failed: {e}", 500
+
+    return "<br>".join(results), 200
+
+
 @app.route("/test-promo")
 def test_promo():
     """Immediately fire one promo conversation — bypasses lock guard for testing."""
