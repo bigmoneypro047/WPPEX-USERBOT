@@ -31,6 +31,9 @@ NIGERIA_TZ = pytz.timezone("Africa/Lagos")
 RAW_GROUPS = [GROUP_1.strip(), GROUP_2.strip(), GROUP_3.strip()]
 GROUPS = []          # filled with resolved InputPeerChannel objects at startup
 
+TEST_GROUP_RAW = "-1003814574407"   # dedicated test group — test-send goes here only
+TEST_GROUP = None   # filled at startup
+
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET
 
@@ -330,21 +333,29 @@ def debug_groups():
 def test_send():
     if not SESSION_STRING:
         return "Bot not running — no session string set.", 400
-    if not GROUPS:
-        return (
-            "❌ 0 groups resolved — check Render logs for startup errors. "
-            "The bot cannot find your groups yet.", 400
-        )
+
     msg = (
         "✅ *PROFESSOR TEST MESSAGE*\n\n"
-        "If you see this in all 3 groups, message sending is working correctly.\n\n"
-        f"Groups loaded: {len(GROUPS)}"
+        "Message sending is working correctly.\n\n"
+        f"Main groups loaded: {len(GROUPS)}/3"
     )
-    asyncio.run_coroutine_threadsafe(send_to_all_groups(msg, "TEST-SEND"), _loop)
-    return (
-        f"📨 Test message sent to {len(GROUPS)}/3 groups — "
-        f"check your Telegram groups now. Also check Render logs for confirmation.", 200
-    )
+
+    if TEST_GROUP:
+        # Send only to the dedicated test group
+        async def _send_test():
+            try:
+                await bot_client.send_message(TEST_GROUP, msg, parse_mode="md")
+                logger.info(f"[TEST-SEND] ✓ Sent to test group '{TEST_GROUP.title}'")
+            except Exception as e:
+                logger.error(f"[TEST-SEND] ✗ {e}")
+        asyncio.run_coroutine_threadsafe(_send_test(), _loop)
+        return f"📨 Test message sent to test group '{TEST_GROUP.title}' — check that group in Telegram.", 200
+    elif GROUPS:
+        # Fallback: test group not found, use main groups
+        asyncio.run_coroutine_threadsafe(send_to_all_groups(msg, "TEST-SEND"), _loop)
+        return f"📨 Test message sent to {len(GROUPS)}/3 main groups (test group not available).", 200
+    else:
+        return "❌ No groups resolved yet — check Render logs for startup errors.", 400
 
 
 @app.route("/")
@@ -607,49 +618,56 @@ def raw_id(val: str) -> int:
     return n
 
 
+def _bare_id(raw: str) -> int:
+    """Convert any group ID format to the bare positive int Telethon uses."""
+    n = abs(int(raw.strip()))
+    s = str(n)
+    # Env vars or Bot-API IDs may have a "100" prefix (e.g. 1003257839303 or 1001234567890)
+    # Telethon dialog.entity.id returns the bare positive ID without that prefix.
+    if s.startswith("100") and len(s) > 12:
+        n = int(s[3:])
+    return n
+
+
 async def resolve_groups():
     """
     Scan all account dialogs (main folder + archived folder) to find the
-    3 configured groups. Avoids get_entity() cache issues with StringSession.
+    3 configured groups + optional test group.
+    Avoids get_entity() cache issues with StringSession.
     """
-    global GROUPS
+    global GROUPS, TEST_GROUP
     GROUPS.clear()
+    TEST_GROUP = None
 
-    target_ids = {}
-    for raw in RAW_GROUPS:
-        n = abs(int(raw.strip()))
-        s = str(n)
-        # Env vars may be stored with a "100" prefix (e.g. 1003257839303)
-        # but Telethon returns the bare ID without it (e.g. 3257839303).
-        # Strip the prefix so they match.
-        if s.startswith("100") and len(s) > 12:
-            n = int(s[3:])
-        target_ids[n] = raw.strip()
-    logger.info(f"[Startup] Looking for group IDs: {list(target_ids.keys())}")
+    # Build lookup: bare_id → raw string
+    target_ids = {_bare_id(r): r.strip() for r in RAW_GROUPS}
+    test_bare = _bare_id(TEST_GROUP_RAW)
+    all_ids = {**target_ids, test_bare: TEST_GROUP_RAW}
+    logger.info(f"[Startup] Looking for group IDs: {list(target_ids.keys())} + test={test_bare}")
 
     found = {}
 
     # Scan folder 0 (main inbox) then folder 1 (archived)
     for folder in (0, 1):
-        if len(found) == len(target_ids):
+        if len(found) == len(all_ids):
             break
         label = "main inbox" if folder == 0 else "archived folder"
         logger.info(f"[Startup] Scanning {label}...")
         try:
             async for dialog in bot_client.iter_dialogs(folder=folder):
                 eid = getattr(dialog.entity, 'id', None)
-                if eid is not None:
-                    if eid in target_ids:
-                        found[eid] = dialog.entity
-                        logger.info(
-                            f"[Startup] ✓ Found '{dialog.title}' "
-                            f"(id={eid}, folder={folder})"
-                        )
-                    if len(found) == len(target_ids):
-                        break
+                if eid is not None and eid in all_ids:
+                    found[eid] = dialog.entity
+                    logger.info(
+                        f"[Startup] ✓ Found '{dialog.title}' "
+                        f"(id={eid}, folder={folder})"
+                    )
+                if len(found) == len(all_ids):
+                    break
         except Exception as e:
             logger.warning(f"[Startup] Could not scan folder {folder}: {e}")
 
+    # Populate the 3 main groups
     for n, raw in target_ids.items():
         if n in found:
             GROUPS.append(found[n])
@@ -659,7 +677,14 @@ async def resolve_groups():
                 f"Is @cardon_js still a member/admin of this group?"
             )
 
-    logger.info(f"[Startup] {len(GROUPS)}/3 groups ready.")
+    # Populate the test group
+    if test_bare in found:
+        TEST_GROUP = found[test_bare]
+        logger.info(f"[Startup] ✓ Test group ready: '{TEST_GROUP.title}'")
+    else:
+        logger.warning(f"[Startup] ⚠ Test group (id={test_bare}) not found — /test-send will use main groups.")
+
+    logger.info(f"[Startup] {len(GROUPS)}/3 main groups ready. Test group: {'✓' if TEST_GROUP else '✗'}")
 
 
 async def start_bot():
