@@ -1629,9 +1629,9 @@ def raw_id(val: str) -> int:
     return n
 
 
-def _bare_id(raw: str) -> int:
+def _bare_id(raw) -> int:
     """Convert any group ID format to the bare positive int Telethon uses."""
-    n = abs(int(raw.strip()))
+    n = abs(int(str(raw).strip()))
     s = str(n)
     # Env vars or Bot-API IDs may have a "100" prefix (e.g. 1003257839303 or 1001234567890)
     # Telethon dialog.entity.id returns the bare positive ID without that prefix.
