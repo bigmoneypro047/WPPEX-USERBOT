@@ -819,45 +819,45 @@ def get_utc(nigeria_h, nigeria_m):
 
 
 async def catch_up_on_startup():
-    """Fire any jobs missed within the last 10 minutes due to a restart."""
+    """
+    Determine the correct lock/unlock state for RIGHT NOW and apply it.
+    This handles any restart at any time of day — no missed-window issues.
+
+    WAT lock schedule (minutes from midnight):
+      000–180  (00:00–03:00)  → LOCKED  (night)
+      180–210  (03:00–03:30)  → UNLOCKED (morning)
+      210–245  (03:30–04:05)  → LOCKED  (extra signal)
+      245–690  (04:05–11:30)  → UNLOCKED
+      690–725  (11:30–12:05)  → LOCKED  (first signal)
+      725–810  (12:05–13:30)  → UNLOCKED
+      810–845  (13:30–14:05)  → LOCKED  (second signal)
+      845–1020 (14:05–17:00)  → UNLOCKED
+      1020+    (17:00–24:00)  → LOCKED  (night)
+    """
     now = datetime.now(NIGERIA_TZ)
-    now_total = now.hour * 60 + now.minute
-    WINDOW = 10  # minutes
+    t = now.hour * 60 + now.minute
 
-    tasks = [
-        (3,  0,  lambda: morning_unlock_with_greeting(),               "Morning Unlock"),
-        (3, 30,  lambda: lock_all_groups("Extra Signal"),               "Extra Signal Lock"),
-        (3, 50,  lambda: send_to_all_groups(MSG_350AM, "Extra Signal"), "Extra Signal Warning"),
-        (4,  0,  lambda: send_to_all_groups(MSG_400AM, "Extra Signal"), "Extra Signal Instructions"),
-        (4,  5,  lambda: unlock_all_groups("Extra Signal"),             "Extra Signal Unlock"),
-        (11, 30, lambda: lock_all_groups("First Basic Signal"),          "First Signal Lock"),
-        (11, 50, lambda: send_to_all_groups(MSG_1150AM, "First Basic Signal"), "First Signal Warning"),
-        (12,  0, lambda: send_to_all_groups(MSG_1200PM, "First Basic Signal"), "First Signal Instructions"),
-        (12,  5, lambda: unlock_all_groups("First Basic Signal"),        "First Signal Unlock"),
-        (13, 30, lambda: lock_all_groups("Second Basic Signal"),         "Second Signal Lock"),
-        (13, 50, lambda: send_to_all_groups(MSG_150PM, "Second Basic Signal"), "Second Signal Warning"),
-        (14,  0, lambda: send_to_all_groups(MSG_200PM, "Second Basic Signal"), "Second Signal Instructions"),
-        (14,  5, lambda: unlock_all_groups("Second Basic Signal"),       "Second Signal Unlock"),
-        (17,  0, lambda: lock_all_groups("Night Lock"),                  "Night Lock"),
-    ]
+    if t < 180 or t >= 1020:
+        state = "lock"
+        reason = "Night Lock (startup catch-up)"
+    elif 210 <= t < 245:
+        state = "lock"
+        reason = "Extra Signal Lock (startup catch-up)"
+    elif 690 <= t < 725:
+        state = "lock"
+        reason = "First Signal Lock (startup catch-up)"
+    elif 810 <= t < 845:
+        state = "lock"
+        reason = "Second Signal Lock (startup catch-up)"
+    else:
+        state = "unlock"
+        reason = "Open window (startup catch-up)"
 
-    caught = []
-    for (th, tm, factory, label) in tasks:
-        task_total = th * 60 + tm
-        if 0 < now_total - task_total <= WINDOW:
-            caught.append((label, factory))
-
-    if not caught:
-        logger.info("[CatchUp] No missed jobs detected.")
-        return
-
-    for label, factory in caught:
-        logger.info(f"[CatchUp] ⚡ Replaying missed job: {label}")
-        try:
-            await factory()
-            await asyncio.sleep(2)
-        except Exception as e:
-            logger.error(f"[CatchUp] ✗ {label}: {e}")
+    logger.info(f"[CatchUp] WAT={now.strftime('%H:%M')} → applying {state.upper()} ({reason})")
+    if state == "lock":
+        await lock_all_groups(reason)
+    else:
+        await unlock_all_groups(reason)
 
 
 # ── UK time helper & member bot message bank ─────────────────────────────────
