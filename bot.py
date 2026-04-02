@@ -15,7 +15,7 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError, SessionPasswordNeededError
 from telethon.tl.functions.messages import EditChatDefaultBannedRightsRequest
-from telethon.tl.types import ChatBannedRights
+from telethon.tl.types import ChatBannedRights, MessageEntityUrl, MessageEntityTextUrl
 import schedule
 import time as time_mod
 
@@ -1728,6 +1728,40 @@ async def start_bot():
 
     # Catch up on any jobs missed while the bot was restarting
     await catch_up_on_startup()
+
+    # ── Link-deletion guard ───────────────────────────────────────────────────
+    group_ids = [g.id for g in GROUPS]
+
+    @bot_client.on(events.NewMessage(chats=group_ids, incoming=True))
+    async def delete_links(event):
+        """Delete any message containing a URL/link — unless PROFESSOR sent it."""
+        try:
+            sender_id = event.sender_id
+            # Never delete PROFESSOR's own messages
+            if sender_id == PROFESSOR_ID:
+                return
+            msg = event.message
+            has_link = False
+            # Check Telethon entity types (clickable links, t.me/ previews, etc.)
+            if msg.entities:
+                for ent in msg.entities:
+                    if isinstance(ent, (MessageEntityUrl, MessageEntityTextUrl)):
+                        has_link = True
+                        break
+            # Fallback: plain-text URL patterns not parsed as entities
+            if not has_link:
+                import re
+                text = msg.message or ""
+                if re.search(r"(https?://|www\.|t\.me/|@\w+\.(?:com|net|org|io))", text, re.IGNORECASE):
+                    has_link = True
+            if not has_link:
+                return
+            await msg.delete()
+            sender = await event.get_sender()
+            name = getattr(sender, 'first_name', str(sender_id)) if sender else str(sender_id)
+            logger.info(f"[LinkGuard] 🗑 Deleted link from '{name}' in '{getattr(event.chat, 'title', event.chat_id)}'")
+        except Exception as exc:
+            logger.error(f"[LinkGuard] Error: {exc}")
 
     sched_thread = threading.Thread(target=run_scheduler, daemon=True)
     sched_thread.start()
