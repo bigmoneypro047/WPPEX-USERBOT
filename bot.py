@@ -989,7 +989,27 @@ def _mark_messages_sent(msgs: list):
 # No repeat for 60 days — history is persisted to GitHub so it survives redeploys.
 
 _LECTURE_HISTORY_FILE = Path("/tmp/qt_lecture_sent.json")   # local cache
-_LECTURE_COOLDOWN     = 60 * 86400  # 60 days
+_LECTURE_COOLDOWN     = 60 * 86400  # 60 days — per full message
+_SENTENCE_COOLDOWN    = 48 * 3600   # 48 hours — per individual sentence/line
+
+
+def _extract_sentences(msg: str) -> list:
+    """Split a message into individual sentences for 48-hour dedup tracking."""
+    import re
+    parts = re.split(r'(?<=[.!?])\s+', msg.strip())
+    # Also split on newlines in case a paragraph has line-breaks between sentences
+    sentences = []
+    for p in parts:
+        for line in p.splitlines():
+            line = line.strip()
+            if len(line) > 20:   # ignore very short fragments
+                sentences.append(line)
+    return sentences
+
+
+def _sentence_key(sentence: str) -> str:
+    """Stable hash key for one sentence."""
+    return "_s:" + hashlib.md5(sentence.lower().strip().encode()).hexdigest()[:14]
 
 # GitHub persistence — keeps the 60-day history across all Render redeploys
 _GH_TOKEN        = os.environ.get("GITHUB_TOKEN", "")
@@ -1164,21 +1184,41 @@ def _pick_next_lecture(used_in_session=None):
 
     random.shuffle(eligible_topics)
 
+    def sentences_fresh(msg: str) -> bool:
+        """Return True if every sentence in msg is outside the 48-hour cooldown."""
+        for s in _extract_sentences(msg):
+            if now - history.get(_sentence_key(s), 0) < _SENTENCE_COOLDOWN:
+                return False
+        return True
+
     for topic in eligible_topics:
         msgs = LECTURE_TOPICS[topic]
-        # Pick a message not sent in 60 days
-        fresh = [m for m in msgs if now - history.get(_msg_key(m), 0) >= _LECTURE_COOLDOWN]
+
+        # Filter: message not sent in 60 days AND no sentence repeated in 48h
+        fresh = [m for m in msgs
+                 if now - history.get(_msg_key(m), 0) >= _LECTURE_COOLDOWN
+                 and sentences_fresh(m)]
+
         if not fresh:
+            # Relax sentence constraint — at least avoid the exact message
+            fresh = [m for m in msgs if now - history.get(_msg_key(m), 0) >= _LECTURE_COOLDOWN]
+
+        if not fresh:
+            # Full fallback — least-recently-sent message in this topic
             fresh = sorted(msgs, key=lambda m: history.get(_msg_key(m), 0))
+
         random.shuffle(fresh)
         chosen = fresh[0]
 
-        # Mark topic and message as used
+        # Mark topic, full message, and all individual sentences as used
         history[f"_topic:{topic}"] = now
         history[_msg_key(chosen)] = now
+        for s in _extract_sentences(chosen):
+            history[_sentence_key(s)] = now
         _lecture_save_sent(history)
 
-        logger.info(f"[Lecture] Picked topic='{topic}' msg={_msg_key(chosen)}")
+        logger.info(f"[Lecture] Picked topic='{topic}' msg={_msg_key(chosen)} "
+                    f"sentences={len(_extract_sentences(chosen))}")
         return topic, chosen
 
     return None, None
