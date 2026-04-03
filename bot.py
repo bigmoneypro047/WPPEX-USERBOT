@@ -425,6 +425,20 @@ def test_now():
     return "<br>".join(results), 200
 
 
+@app.route("/test-lecture")
+def test_lecture():
+    """Immediately fire one full lecture session (5 messages, randomised gaps) — for testing."""
+    if not GROUPS:
+        return "❌ No groups resolved yet.", 400
+    if not LECTURE_MESSAGES:
+        return "❌ No lecture messages loaded. Check lecture_messages.txt is in the repo.", 400
+    asyncio.run_coroutine_threadsafe(run_lecture_session("Manual Test"), _loop)
+    return (
+        f"✅ Lecture session started — {len(LECTURE_MESSAGES)} messages loaded. "
+        "5 messages will appear in each group with 4–5 min gaps between them."
+    ), 200
+
+
 @app.route("/test-promo")
 def test_promo():
     """Immediately fire one promo conversation — bypasses lock guard for testing."""
@@ -1027,23 +1041,39 @@ def _pick_next_lecture():
     return chosen
 
 
-async def send_lecture_message():
-    """Pick one lecture message and send it to all groups."""
+async def send_one_lecture():
+    """Pick one lecture message, bold-format it, and send to all groups."""
     msg = _pick_next_lecture()
     if not msg:
         logger.warning("[Lecture] No lecture messages available.")
         return
+    formatted = f"**{msg}**"
     for group in GROUPS:
         try:
-            await bot_client.send_message(group, msg, parse_mode=None)
+            await bot_client.send_message(group, formatted, parse_mode="md")
             logger.info(f"[Lecture] ✓ Sent to '{getattr(group, 'title', group.id)}'")
             await asyncio.sleep(2)
         except Exception as e:
             logger.error(f"[Lecture] ✗ {group}: {e}")
 
 
-def fire_lecture():
-    asyncio.run_coroutine_threadsafe(send_lecture_message(), _loop)
+async def run_lecture_session(label: str):
+    """
+    Send 5 lecture messages with randomised 4–5 min gaps.
+    Starts at the lock time; all 5 finish well before the :50 signal warning.
+    """
+    logger.info(f"[Lecture] Starting session: {label}")
+    for i in range(5):
+        await send_one_lecture()
+        if i < 4:
+            gap = random.randint(240, 300)   # 4–5 min in seconds
+            logger.info(f"[Lecture] Next message in {gap}s")
+            await asyncio.sleep(gap)
+    logger.info(f"[Lecture] Session complete: {label}")
+
+
+def fire_lecture_session(label: str):
+    asyncio.run_coroutine_threadsafe(run_lecture_session(label), _loop)
 
 
 # ── Topic-based conversation pool ────────────────────────────────────────────
@@ -1563,30 +1593,21 @@ def run_scheduler():
 
     # ── Session 1: Extra Signal ─────────────────────────────
     schedule.every().day.at(get_utc(3, 30)).do(fire_lock,    "Extra Signal")
-    schedule.every().day.at(get_utc(3, 30)).do(fire_lecture)           # Lecture 1
-    schedule.every().day.at(get_utc(3, 35)).do(fire_lecture)           # Lecture 2
-    schedule.every().day.at(get_utc(3, 40)).do(fire_lecture)           # Lecture 3
-    schedule.every().day.at(get_utc(3, 45)).do(fire_lecture)           # Lecture 4
+    schedule.every().day.at(get_utc(3, 30)).do(fire_lecture_session, "Extra Signal Lecture")
     schedule.every().day.at(get_utc(3, 50)).do(fire_job,    MSG_350AM, "Extra Signal")
     schedule.every().day.at(get_utc(4,  0)).do(fire_job,    MSG_400AM, "Extra Signal")
     schedule.every().day.at(get_utc(4,  5)).do(fire_unlock, "Extra Signal")
 
     # ── Session 2: First Basic Signal ───────────────────────
     schedule.every().day.at(get_utc(11, 30)).do(fire_lock,   "First Basic Signal")
-    schedule.every().day.at(get_utc(11, 30)).do(fire_lecture)          # Lecture 1
-    schedule.every().day.at(get_utc(11, 35)).do(fire_lecture)          # Lecture 2
-    schedule.every().day.at(get_utc(11, 40)).do(fire_lecture)          # Lecture 3
-    schedule.every().day.at(get_utc(11, 45)).do(fire_lecture)          # Lecture 4
+    schedule.every().day.at(get_utc(11, 30)).do(fire_lecture_session, "First Signal Lecture")
     schedule.every().day.at(get_utc(11, 50)).do(fire_job,    MSG_1150AM, "First Basic Signal")
     schedule.every().day.at(get_utc(12,  0)).do(fire_job,    MSG_1200PM, "First Basic Signal")
     schedule.every().day.at(get_utc(12,  5)).do(fire_unlock, "First Basic Signal")
 
     # ── Session 3: Second Basic Signal ──────────────────────
     schedule.every().day.at(get_utc(13, 30)).do(fire_lock,   "Second Basic Signal")
-    schedule.every().day.at(get_utc(13, 30)).do(fire_lecture)          # Lecture 1
-    schedule.every().day.at(get_utc(13, 35)).do(fire_lecture)          # Lecture 2
-    schedule.every().day.at(get_utc(13, 40)).do(fire_lecture)          # Lecture 3
-    schedule.every().day.at(get_utc(13, 45)).do(fire_lecture)          # Lecture 4
+    schedule.every().day.at(get_utc(13, 30)).do(fire_lecture_session, "Second Signal Lecture")
     schedule.every().day.at(get_utc(13, 50)).do(fire_job,    MSG_150PM, "Second Basic Signal")
     schedule.every().day.at(get_utc(14,  0)).do(fire_job,    MSG_200PM, "Second Basic Signal")
     schedule.every().day.at(get_utc(14,  5)).do(fire_unlock, "Second Basic Signal")
@@ -1931,7 +1952,7 @@ def keep_alive():
     """
     self_url  = os.environ.get("RENDER_EXTERNAL_URL", f"http://localhost:{PORT}").rstrip("/")
     ping_url  = f"{self_url}/ping"
-    interval  = 480  # 8 minutes — well within Render's 15-min idle timeout
+    interval  = 300  # 5 minutes — aggressive ping to never miss a lecture session
     logger.info(f"[KeepAlive] Starting — pinging {ping_url} every {interval}s")
     while True:
         time_mod.sleep(interval)
