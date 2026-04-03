@@ -5,6 +5,7 @@ import threading
 import random
 import json
 import hashlib
+import base64
 from pathlib import Path
 from concurrent.futures import Future
 from datetime import datetime
@@ -983,11 +984,90 @@ def _mark_messages_sent(msgs: list):
 
 # ── PROFESSOR LECTURE MESSAGES ────────────────────────────────────────────────
 # Loaded from lecture_messages.txt alongside bot.py.
-# Sent 4 times per signal lock window (:30/:35/:40/:45) to all groups.
-# No repeat for 60 days, tracked in /tmp/qt_lecture_sent.json.
+# Sent 5 times per signal lock window with randomised 4-5 min gaps.
+# No repeat for 60 days — history is persisted to GitHub so it survives redeploys.
 
-_LECTURE_HISTORY_FILE = Path("/tmp/qt_lecture_sent.json")
+_LECTURE_HISTORY_FILE = Path("/tmp/qt_lecture_sent.json")   # local cache
 _LECTURE_COOLDOWN     = 60 * 86400  # 60 days
+
+# GitHub persistence — keeps the 60-day history across all Render redeploys
+_GH_TOKEN        = os.environ.get("GITHUB_TOKEN", "")
+_GH_OWNER        = "bigmoneypro047"
+_GH_REPO         = "WPPEX-USERBOT"
+_GH_HISTORY_PATH = "lecture_history.json"
+_GH_HISTORY_SHA  = None   # current blob SHA; updated after every push
+
+
+def _lecture_gh_fetch():
+    """Download lecture_history.json from GitHub. Returns (data_dict, blob_sha)."""
+    if not _GH_TOKEN:
+        return {}, None
+    url = f"https://api.github.com/repos/{_GH_OWNER}/{_GH_REPO}/contents/{_GH_HISTORY_PATH}"
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"token {_GH_TOKEN}",
+        "User-Agent": "wppex-bot",
+        "Accept": "application/vnd.github.v3+json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            j = json.loads(r.read())
+            data = json.loads(base64.b64decode(j["content"]).decode())
+            return data, j["sha"]
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return {}, None       # file doesn't exist yet — first run
+        logger.error(f"[Lecture] GitHub fetch error {e.code}: {e}")
+        return {}, None
+    except Exception as e:
+        logger.error(f"[Lecture] GitHub fetch error: {e}")
+        return {}, None
+
+
+def _lecture_gh_push(history: dict, sha=None):
+    """Push updated lecture history to GitHub (runs in a background thread)."""
+    global _GH_HISTORY_SHA
+    if not _GH_TOKEN:
+        return
+    url = f"https://api.github.com/repos/{_GH_OWNER}/{_GH_REPO}/contents/{_GH_HISTORY_PATH}"
+    body = {
+        "message": "chore: lecture history sync",
+        "content": base64.b64encode(json.dumps(history).encode()).decode(),
+    }
+    if sha:
+        body["sha"] = sha
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, method="PUT", headers={
+        "Authorization": f"token {_GH_TOKEN}",
+        "User-Agent": "wppex-bot",
+        "Accept": "application/vnd.github.v3+json",
+        "Content-Type": "application/json",
+        "Content-Length": str(len(data)),
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            j = json.loads(r.read())
+            _GH_HISTORY_SHA = j["content"]["sha"]
+            logger.info(f"[Lecture] ✓ History saved to GitHub ({len(history)} entries, sha={_GH_HISTORY_SHA[:7]})")
+    except Exception as e:
+        logger.error(f"[Lecture] GitHub push error: {e}")
+
+
+def lecture_history_load_from_github():
+    """
+    Called once at startup — pull the persisted history from GitHub and
+    cache it locally in /tmp so reads stay fast during the session.
+    """
+    global _GH_HISTORY_SHA
+    data, sha = _lecture_gh_fetch()
+    if sha:
+        _GH_HISTORY_SHA = sha
+        try:
+            _LECTURE_HISTORY_FILE.write_text(json.dumps(data))
+            logger.info(f"[Lecture] ✓ History restored from GitHub: {len(data)} entries")
+        except Exception as e:
+            logger.error(f"[Lecture] Cache write error: {e}")
+    else:
+        logger.info("[Lecture] No GitHub history found — starting fresh.")
 
 
 def _load_lecture_messages() -> list:
@@ -1010,6 +1090,7 @@ LECTURE_MESSAGES: list = []   # populated at startup
 
 
 def _lecture_load_sent() -> dict:
+    """Read from local /tmp cache (fast). GitHub is only fetched once at startup."""
     try:
         if _LECTURE_HISTORY_FILE.exists():
             return json.loads(_LECTURE_HISTORY_FILE.read_text())
@@ -1019,10 +1100,16 @@ def _lecture_load_sent() -> dict:
 
 
 def _lecture_save_sent(history: dict):
+    """Save locally AND push to GitHub in a background thread (non-blocking)."""
     try:
         _LECTURE_HISTORY_FILE.write_text(json.dumps(history))
     except Exception:
         pass
+    threading.Thread(
+        target=_lecture_gh_push,
+        args=(history, _GH_HISTORY_SHA),
+        daemon=True,
+    ).start()
 
 
 def _pick_next_lecture():
@@ -1825,6 +1912,7 @@ async def start_bot():
 
     global LECTURE_MESSAGES
     LECTURE_MESSAGES = _load_lecture_messages()
+    lecture_history_load_from_github()   # restore 60-day history from GitHub
 
     await resolve_groups()
 
