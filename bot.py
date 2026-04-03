@@ -431,11 +431,12 @@ def test_lecture():
     """Immediately fire one full lecture session (5 messages, randomised gaps) — for testing."""
     if not GROUPS:
         return "❌ No groups resolved yet.", 400
-    if not LECTURE_MESSAGES:
+    if not LECTURE_TOPICS:
         return "❌ No lecture messages loaded. Check lecture_messages.txt is in the repo.", 400
+    total = sum(len(v) for v in LECTURE_TOPICS.values())
     asyncio.run_coroutine_threadsafe(run_lecture_session("Manual Test"), _loop)
     return (
-        f"✅ Lecture session started — {len(LECTURE_MESSAGES)} messages loaded. "
+        f"✅ Lecture session started — {total} messages across {len(LECTURE_TOPICS)} topics loaded. "
         "5 messages will appear in each group with 4–5 min gaps between them."
     ), 200
 
@@ -1070,23 +1071,41 @@ def lecture_history_load_from_github():
         logger.info("[Lecture] No GitHub history found — starting fresh.")
 
 
-def _load_lecture_messages() -> list:
-    """Parse lecture_messages.txt — blank-line-separated paragraphs."""
+_TOPIC_COOLDOWN = 48 * 3600   # 48 hours between reusing the same topic
+
+
+def _load_lecture_messages() -> dict:
+    """
+    Parse lecture_messages.txt into {topic_name: [message, ...]} dict.
+    Topic headers are short lines with ≤6 words and no period.
+    """
     try:
         base = Path(__file__).parent
         fpath = base / "lecture_messages.txt"
         text = fpath.read_text(encoding="utf-8")
         blocks = [b.strip() for b in text.split("\n\n") if b.strip()]
-        # Drop bare title lines (≤ 5 words, no period)
-        msgs = [b for b in blocks if len(b.split()) > 5]
-        logger.info(f"[Lecture] Loaded {len(msgs)} messages from lecture_messages.txt")
-        return msgs
+
+        def is_header(b):
+            return len(b.split()) <= 6 and "." not in b
+
+        topics = {}
+        current = None
+        for b in blocks:
+            if is_header(b):
+                current = b
+                topics[current] = []
+            elif current and len(b.split()) > 5:
+                topics[current].append(b)
+
+        total = sum(len(v) for v in topics.values())
+        logger.info(f"[Lecture] Loaded {total} messages across {len(topics)} topics: {list(topics.keys())}")
+        return topics
     except Exception as e:
         logger.error(f"[Lecture] Failed to load lecture_messages.txt: {e}")
-        return []
+        return {}
 
 
-LECTURE_MESSAGES: list = []   # populated at startup
+LECTURE_TOPICS: dict = {}   # {topic_name: [messages]} — populated at startup
 
 
 def _lecture_load_sent() -> dict:
@@ -1112,34 +1131,66 @@ def _lecture_save_sent(history: dict):
     ).start()
 
 
-def _pick_next_lecture():
-    """Return a random unused lecture message (not sent in last 60 days)."""
-    if not LECTURE_MESSAGES:
-        return None
+def _pick_next_lecture(used_in_session=None):
+    """
+    Pick one random message obeying two rules:
+      1. Topic 48-hour cooldown — same topic not reused within 48 hours
+      2. Message 60-day cooldown — same message not sent within 60 days
+    Also avoids topics already used earlier in the same session.
+    Returns (topic_name, message) or (None, None) on failure.
+    """
+    if not LECTURE_TOPICS:
+        return None, None
+
+    used_in_session = used_in_session or set()
     history = _lecture_load_sent()
     now = time_mod.time()
-    fresh = [m for m in LECTURE_MESSAGES if now - history.get(_msg_key(m), 0) >= _LECTURE_COOLDOWN]
-    if not fresh:
-        # All 3010 used within 60 days — fall back to least-recently-sent
-        fresh = sorted(LECTURE_MESSAGES, key=lambda m: history.get(_msg_key(m), 0))
-    random.shuffle(fresh)        # pick randomly from the unused pool
-    chosen = fresh[0]
-    history[_msg_key(chosen)] = now
-    _lecture_save_sent(history)
-    return chosen
+
+    # Build list of eligible topics (48h cooldown + not used in this session)
+    def topic_eligible(t):
+        last = history.get(f"_topic:{t}", 0)
+        return now - last >= _TOPIC_COOLDOWN and t not in used_in_session
+
+    eligible_topics = [t for t in LECTURE_TOPICS if topic_eligible(t)]
+
+    if not eligible_topics:
+        # Relax session constraint — at least avoid 48h cooldown
+        eligible_topics = [t for t in LECTURE_TOPICS
+                           if now - history.get(f"_topic:{t}", 0) >= _TOPIC_COOLDOWN]
+    if not eligible_topics:
+        # Final fallback — pick least-recently-used topic
+        eligible_topics = sorted(LECTURE_TOPICS,
+                                 key=lambda t: history.get(f"_topic:{t}", 0))
+
+    random.shuffle(eligible_topics)
+
+    for topic in eligible_topics:
+        msgs = LECTURE_TOPICS[topic]
+        # Pick a message not sent in 60 days
+        fresh = [m for m in msgs if now - history.get(_msg_key(m), 0) >= _LECTURE_COOLDOWN]
+        if not fresh:
+            fresh = sorted(msgs, key=lambda m: history.get(_msg_key(m), 0))
+        random.shuffle(fresh)
+        chosen = fresh[0]
+
+        # Mark topic and message as used
+        history[f"_topic:{topic}"] = now
+        history[_msg_key(chosen)] = now
+        _lecture_save_sent(history)
+
+        logger.info(f"[Lecture] Picked topic='{topic}' msg={_msg_key(chosen)}")
+        return topic, chosen
+
+    return None, None
 
 
-async def send_one_lecture():
-    """Pick one lecture message, bold-format it, and send to all groups."""
-    msg = _pick_next_lecture()
-    if not msg:
-        logger.warning("[Lecture] No lecture messages available.")
-        return
+async def send_one_lecture(msg: str, topic: str = ""):
+    """Bold-format one lecture message and send it to all groups."""
     formatted = f"**{msg}**"
     for group in GROUPS:
         try:
             await bot_client.send_message(group, formatted, parse_mode="md")
-            logger.info(f"[Lecture] ✓ Sent to '{getattr(group, 'title', group.id)}'")
+            logger.info(f"[Lecture] ✓ '{topic}' → '{getattr(group, 'title', group.id)}'")
             await asyncio.sleep(2)
         except Exception as e:
             logger.error(f"[Lecture] ✗ {group}: {e}")
@@ -1147,15 +1198,21 @@ async def send_one_lecture():
 
 async def run_lecture_session(label: str):
     """
-    Send 5 lecture messages with randomised 4–5 min gaps.
-    Starts at the lock time; all 5 finish well before the :50 signal warning.
+    Send 5 lecture messages — one per topic, 48h cooldown per topic,
+    60-day cooldown per individual message. Randomised 4–5 min gaps.
     """
     logger.info(f"[Lecture] Starting session: {label}")
+    used_topics = set()
     for i in range(5):
-        await send_one_lecture()
+        topic, msg = _pick_next_lecture(used_in_session=used_topics)
+        if not msg:
+            logger.warning(f"[Lecture] No eligible message at step {i+1}, skipping.")
+            break
+        used_topics.add(topic)
+        await send_one_lecture(msg, topic)
         if i < 4:
-            gap = random.randint(240, 300)   # 4–5 min in seconds
-            logger.info(f"[Lecture] Next message in {gap}s")
+            gap = random.randint(240, 300)   # 4–5 min
+            logger.info(f"[Lecture] Next message in {gap}s (topic used so far: {used_topics})")
             await asyncio.sleep(gap)
     logger.info(f"[Lecture] Session complete: {label}")
 
@@ -1910,8 +1967,8 @@ async def start_bot():
     PROFESSOR_ID = me.id
     logger.info(f"=== PROFESSOR online as: {me.first_name} (@{me.username}) (ID={PROFESSOR_ID}) ===")
 
-    global LECTURE_MESSAGES
-    LECTURE_MESSAGES = _load_lecture_messages()
+    global LECTURE_TOPICS
+    LECTURE_TOPICS = _load_lecture_messages()
     lecture_history_load_from_github()   # restore 60-day history from GitHub
 
     await resolve_groups()
