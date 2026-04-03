@@ -1026,15 +1026,16 @@ def _lecture_save_sent(history: dict):
 
 
 def _pick_next_lecture():
-    """Return the least-recently-sent lecture message that is outside the 60-day cooldown."""
+    """Return a random unused lecture message (not sent in last 60 days)."""
     if not LECTURE_MESSAGES:
         return None
     history = _lecture_load_sent()
     now = time_mod.time()
     fresh = [m for m in LECTURE_MESSAGES if now - history.get(_msg_key(m), 0) >= _LECTURE_COOLDOWN]
     if not fresh:
-        # All used within 60 days — fall back to least-recently-sent
+        # All 3010 used within 60 days — fall back to least-recently-sent
         fresh = sorted(LECTURE_MESSAGES, key=lambda m: history.get(_msg_key(m), 0))
+    random.shuffle(fresh)        # pick randomly from the unused pool
     chosen = fresh[0]
     history[_msg_key(chosen)] = now
     _lecture_save_sent(history)
