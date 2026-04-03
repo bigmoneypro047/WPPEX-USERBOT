@@ -967,6 +967,85 @@ def _mark_messages_sent(msgs: list):
         history[_msg_key(msg)] = now
     _save_sent(history)
 
+# ── PROFESSOR LECTURE MESSAGES ────────────────────────────────────────────────
+# Loaded from lecture_messages.txt alongside bot.py.
+# Sent 4 times per signal lock window (:30/:35/:40/:45) to all groups.
+# No repeat for 60 days, tracked in /tmp/qt_lecture_sent.json.
+
+_LECTURE_HISTORY_FILE = Path("/tmp/qt_lecture_sent.json")
+_LECTURE_COOLDOWN     = 60 * 86400  # 60 days
+
+
+def _load_lecture_messages() -> list:
+    """Parse lecture_messages.txt — blank-line-separated paragraphs."""
+    try:
+        base = Path(__file__).parent
+        fpath = base / "lecture_messages.txt"
+        text = fpath.read_text(encoding="utf-8")
+        blocks = [b.strip() for b in text.split("\n\n") if b.strip()]
+        # Drop bare title lines (≤ 5 words, no period)
+        msgs = [b for b in blocks if len(b.split()) > 5]
+        logger.info(f"[Lecture] Loaded {len(msgs)} messages from lecture_messages.txt")
+        return msgs
+    except Exception as e:
+        logger.error(f"[Lecture] Failed to load lecture_messages.txt: {e}")
+        return []
+
+
+LECTURE_MESSAGES: list = []   # populated at startup
+
+
+def _lecture_load_sent() -> dict:
+    try:
+        if _LECTURE_HISTORY_FILE.exists():
+            return json.loads(_LECTURE_HISTORY_FILE.read_text())
+    except Exception:
+        pass
+    return {}
+
+
+def _lecture_save_sent(history: dict):
+    try:
+        _LECTURE_HISTORY_FILE.write_text(json.dumps(history))
+    except Exception:
+        pass
+
+
+def _pick_next_lecture():
+    """Return the least-recently-sent lecture message that is outside the 60-day cooldown."""
+    if not LECTURE_MESSAGES:
+        return None
+    history = _lecture_load_sent()
+    now = time_mod.time()
+    fresh = [m for m in LECTURE_MESSAGES if now - history.get(_msg_key(m), 0) >= _LECTURE_COOLDOWN]
+    if not fresh:
+        # All used within 60 days — fall back to least-recently-sent
+        fresh = sorted(LECTURE_MESSAGES, key=lambda m: history.get(_msg_key(m), 0))
+    chosen = fresh[0]
+    history[_msg_key(chosen)] = now
+    _lecture_save_sent(history)
+    return chosen
+
+
+async def send_lecture_message():
+    """Pick one lecture message and send it to all groups."""
+    msg = _pick_next_lecture()
+    if not msg:
+        logger.warning("[Lecture] No lecture messages available.")
+        return
+    for group in GROUPS:
+        try:
+            await bot_client.send_message(group, msg, parse_mode=None)
+            logger.info(f"[Lecture] ✓ Sent to '{getattr(group, 'title', group.id)}'")
+            await asyncio.sleep(2)
+        except Exception as e:
+            logger.error(f"[Lecture] ✗ {group}: {e}")
+
+
+def fire_lecture():
+    asyncio.run_coroutine_threadsafe(send_lecture_message(), _loop)
+
+
 # ── Topic-based conversation pool ────────────────────────────────────────────
 # Each topic is a list of messages that are contextually related.
 # Within a session all messages come from ONE topic so conversation stays coherent.
@@ -1483,19 +1562,31 @@ def run_scheduler():
     schedule.every().day.at(get_utc(3,  0)).do(fire_morning_unlock)
 
     # ── Session 1: Extra Signal ─────────────────────────────
-    schedule.every().day.at(get_utc(3, 30)).do(fire_lock,   "Extra Signal")
+    schedule.every().day.at(get_utc(3, 30)).do(fire_lock,    "Extra Signal")
+    schedule.every().day.at(get_utc(3, 30)).do(fire_lecture)           # Lecture 1
+    schedule.every().day.at(get_utc(3, 35)).do(fire_lecture)           # Lecture 2
+    schedule.every().day.at(get_utc(3, 40)).do(fire_lecture)           # Lecture 3
+    schedule.every().day.at(get_utc(3, 45)).do(fire_lecture)           # Lecture 4
     schedule.every().day.at(get_utc(3, 50)).do(fire_job,    MSG_350AM, "Extra Signal")
     schedule.every().day.at(get_utc(4,  0)).do(fire_job,    MSG_400AM, "Extra Signal")
     schedule.every().day.at(get_utc(4,  5)).do(fire_unlock, "Extra Signal")
 
     # ── Session 2: First Basic Signal ───────────────────────
     schedule.every().day.at(get_utc(11, 30)).do(fire_lock,   "First Basic Signal")
+    schedule.every().day.at(get_utc(11, 30)).do(fire_lecture)          # Lecture 1
+    schedule.every().day.at(get_utc(11, 35)).do(fire_lecture)          # Lecture 2
+    schedule.every().day.at(get_utc(11, 40)).do(fire_lecture)          # Lecture 3
+    schedule.every().day.at(get_utc(11, 45)).do(fire_lecture)          # Lecture 4
     schedule.every().day.at(get_utc(11, 50)).do(fire_job,    MSG_1150AM, "First Basic Signal")
     schedule.every().day.at(get_utc(12,  0)).do(fire_job,    MSG_1200PM, "First Basic Signal")
     schedule.every().day.at(get_utc(12,  5)).do(fire_unlock, "First Basic Signal")
 
     # ── Session 3: Second Basic Signal ──────────────────────
     schedule.every().day.at(get_utc(13, 30)).do(fire_lock,   "Second Basic Signal")
+    schedule.every().day.at(get_utc(13, 30)).do(fire_lecture)          # Lecture 1
+    schedule.every().day.at(get_utc(13, 35)).do(fire_lecture)          # Lecture 2
+    schedule.every().day.at(get_utc(13, 40)).do(fire_lecture)          # Lecture 3
+    schedule.every().day.at(get_utc(13, 45)).do(fire_lecture)          # Lecture 4
     schedule.every().day.at(get_utc(13, 50)).do(fire_job,    MSG_150PM, "Second Basic Signal")
     schedule.every().day.at(get_utc(14,  0)).do(fire_job,    MSG_200PM, "Second Basic Signal")
     schedule.every().day.at(get_utc(14,  5)).do(fire_unlock, "Second Basic Signal")
@@ -1709,6 +1800,9 @@ async def start_bot():
     global PROFESSOR_ID
     PROFESSOR_ID = me.id
     logger.info(f"=== PROFESSOR online as: {me.first_name} (@{me.username}) (ID={PROFESSOR_ID}) ===")
+
+    global LECTURE_MESSAGES
+    LECTURE_MESSAGES = _load_lecture_messages()
 
     await resolve_groups()
 
