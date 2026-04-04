@@ -3,7 +3,7 @@ services:
     name: wppex-userbot
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python userbot/scheduler.py
+    startCommand: python bot.py
     envVars:
       - key: TELEGRAM_API_ID
         sync: false
