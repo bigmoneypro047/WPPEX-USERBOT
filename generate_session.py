@@ -1,37 +1,33 @@
+#!/usr/bin/env python3
 """
-Run this script ONCE on your local machine to generate your Telegram session string.
-Then copy the printed session string and add it as TELEGRAM_SESSION_STRING on Render.
-
-Requirements:
-    pip install telethon
-
-Usage:
-    python generate_session.py
+One-time login script to generate a Telegram session string.
+Run this ONCE to authenticate, then save the printed SESSION STRING
+as the secret TELEGRAM_SESSION in Replit Secrets.
+After that, the main scheduler.py will use it without re-prompting for a code.
 """
+
+import os
 import asyncio
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-API_ID = int(input("Enter your TELEGRAM_API_ID: ").strip())
-API_HASH = input("Enter your TELEGRAM_API_HASH: ").strip()
-PHONE = input("Enter your Telegram phone number (e.g. +2348012345678): ").strip()
+API_ID   = int(os.environ["TELEGRAM_API_ID"])
+API_HASH = os.environ["TELEGRAM_API_HASH"]
+PHONE    = os.environ["TELEGRAM_PHONE"]
 
 
-async def generate():
+async def main():
     client = TelegramClient(StringSession(), API_ID, API_HASH)
     await client.start(phone=PHONE)
-    session_string = client.session.save()
+    print("\n" + "=" * 60)
+    print("SUCCESS! Copy the string below and add it as Replit Secret:")
+    print("  Secret name:  TELEGRAM_SESSION")
+    print("  Secret value: (the long string on the next line)")
+    print()
+    print(client.session.save())
+    print("=" * 60)
     await client.disconnect()
 
-    print("\n" + "=" * 60)
-    print("SUCCESS! Your session string is:")
-    print("=" * 60)
-    print(session_string)
-    print("=" * 60)
-    print("\nCopy the string above and add it to Render as:")
-    print("  Environment Variable Name:  TELEGRAM_SESSION_STRING")
-    print("  Value: (paste the string above)")
-    print("\nKeep this string SECRET — it gives full access to your Telegram account.")
 
-
-asyncio.run(generate())
+if __name__ == "__main__":
+    asyncio.run(main())
