@@ -1294,14 +1294,50 @@ def _lecture_save_sent(history: dict):
     ).start()
 
 
+def _pick_message_from_topic(topic: str, history: dict, now: float):
+    """
+    Pick one fresh message from a specific topic obeying:
+      - 60-day per-message cooldown
+      - 48-hour per-sentence cooldown (relaxed if needed)
+    Returns the chosen message string, or None if topic has no messages.
+    """
+    msgs = LECTURE_TOPICS.get(topic, [])
+    if not msgs:
+        return None
+
+    def sentences_fresh(msg: str) -> bool:
+        for s in _extract_sentences(msg):
+            if now - history.get(_sentence_key(s), 0) < _SENTENCE_COOLDOWN:
+                return False
+        return True
+
+    # Best: message not sent in 60 days AND no repeated sentence in 48h
+    fresh = [m for m in msgs
+             if now - history.get(_msg_key(m), 0) >= _LECTURE_COOLDOWN
+             and sentences_fresh(m)]
+
+    if not fresh:
+        # Relax sentence rule — just avoid exact message repeat
+        fresh = [m for m in msgs if now - history.get(_msg_key(m), 0) >= _LECTURE_COOLDOWN]
+
+    if not fresh:
+        # Final fallback — least-recently-sent message in this topic
+        fresh = sorted(msgs, key=lambda m: history.get(_msg_key(m), 0))
+
+    random.shuffle(fresh)
+    chosen = fresh[0]
+
+    # Record usage
+    history[_msg_key(chosen)] = now
+    for s in _extract_sentences(chosen):
+        history[_sentence_key(s)] = now
+
+    logger.info(f"[Lecture] Picked topic='{topic}' msg={_msg_key(chosen)}")
+    return chosen
+
+
 def _pick_next_lecture(used_in_session=None):
-    """
-    Pick one random message obeying two rules:
-      1. Topic 48-hour cooldown — same topic not reused within 48 hours
-      2. Message 60-day cooldown — same message not sent within 60 days
-    Also avoids topics already used earlier in the same session.
-    Returns (topic_name, message) or (None, None) on failure.
-    """
+    """Legacy single-pick used by /status endpoint — picks from one eligible topic."""
     if not LECTURE_TOPICS:
         return None, None
 
@@ -1309,60 +1345,17 @@ def _pick_next_lecture(used_in_session=None):
     history = _lecture_load_sent()
     now = time_mod.time()
 
-    # Build list of eligible topics (48h cooldown + not used in this session)
-    def topic_eligible(t):
-        last = history.get(f"_topic:{t}", 0)
-        return now - last >= _TOPIC_COOLDOWN and t not in used_in_session
+    eligible = [t for t in LECTURE_TOPICS if t not in used_in_session]
+    if not eligible:
+        eligible = list(LECTURE_TOPICS.keys())
+    random.shuffle(eligible)
 
-    eligible_topics = [t for t in LECTURE_TOPICS if topic_eligible(t)]
-
-    if not eligible_topics:
-        # Relax session constraint — at least avoid 48h cooldown
-        eligible_topics = [t for t in LECTURE_TOPICS
-                           if now - history.get(f"_topic:{t}", 0) >= _TOPIC_COOLDOWN]
-    if not eligible_topics:
-        # Final fallback — pick least-recently-used topic
-        eligible_topics = sorted(LECTURE_TOPICS,
-                                 key=lambda t: history.get(f"_topic:{t}", 0))
-
-    random.shuffle(eligible_topics)
-
-    def sentences_fresh(msg: str) -> bool:
-        """Return True if every sentence in msg is outside the 48-hour cooldown."""
-        for s in _extract_sentences(msg):
-            if now - history.get(_sentence_key(s), 0) < _SENTENCE_COOLDOWN:
-                return False
-        return True
-
-    for topic in eligible_topics:
-        msgs = LECTURE_TOPICS[topic]
-
-        # Filter: message not sent in 60 days AND no sentence repeated in 48h
-        fresh = [m for m in msgs
-                 if now - history.get(_msg_key(m), 0) >= _LECTURE_COOLDOWN
-                 and sentences_fresh(m)]
-
-        if not fresh:
-            # Relax sentence constraint — at least avoid the exact message
-            fresh = [m for m in msgs if now - history.get(_msg_key(m), 0) >= _LECTURE_COOLDOWN]
-
-        if not fresh:
-            # Full fallback — least-recently-sent message in this topic
-            fresh = sorted(msgs, key=lambda m: history.get(_msg_key(m), 0))
-
-        random.shuffle(fresh)
-        chosen = fresh[0]
-
-        # Mark topic, full message, and all individual sentences as used
-        history[f"_topic:{topic}"] = now
-        history[_msg_key(chosen)] = now
-        for s in _extract_sentences(chosen):
-            history[_sentence_key(s)] = now
-        _lecture_save_sent(history)
-
-        logger.info(f"[Lecture] Picked topic='{topic}' msg={_msg_key(chosen)} "
-                    f"sentences={len(_extract_sentences(chosen))}")
-        return topic, chosen
+    for topic in eligible:
+        msg = _pick_message_from_topic(topic, history, now)
+        if msg:
+            history[f"_topic:{topic}"] = now
+            _lecture_save_sent(history)
+            return topic, msg
 
     return None, None
 
@@ -1384,23 +1377,42 @@ async def send_one_lecture(msg: str, topic: str = ""):
 
 async def run_lecture_session(label: str):
     """
-    Send 5 lecture messages — one per topic, 48h cooldown per topic,
-    60-day cooldown per individual message. Randomised 4–5 min gaps.
+    Send 1 message from EVERY topic (all 11), shuffled randomly.
+    Each message obeys its 60-day per-message cooldown and 48h per-sentence
+    deduplication. Random 4–5 min gaps between messages.
     """
-    logger.info(f"[Lecture] Starting session: {label}")
-    used_topics = set()
-    for i in range(5):
-        topic, msg = _pick_next_lecture(used_in_session=used_topics)
+    if not LECTURE_TOPICS:
+        logger.warning(f"[Lecture] No topics loaded — skipping session: {label}")
+        return
+
+    logger.info(f"[Lecture] Starting mixed-topic session: {label}")
+
+    history = _lecture_load_sent()
+    now = time_mod.time()
+
+    # Shuffle all topics so order varies every session
+    all_topics = list(LECTURE_TOPICS.keys())
+    random.shuffle(all_topics)
+
+    sent_count = 0
+    for i, topic in enumerate(all_topics):
+        msg = _pick_message_from_topic(topic, history, now)
         if not msg:
-            logger.warning(f"[Lecture] No eligible message at step {i+1}, skipping.")
-            break
-        used_topics.add(topic)
+            logger.warning(f"[Lecture] No eligible message for topic '{topic}', skipping.")
+            continue
+
+        # Persist after every pick so a crash mid-session doesn't lose history
+        _lecture_save_sent(history)
+
         await send_one_lecture(msg, topic)
-        if i < 4:
-            gap = random.randint(240, 300)   # 4–5 min
-            logger.info(f"[Lecture] Next message in {gap}s (topic used so far: {used_topics})")
+        sent_count += 1
+
+        if i < len(all_topics) - 1:
+            gap = random.randint(240, 300)   # 4–5 min between messages
+            logger.info(f"[Lecture] Next topic in {gap}s")
             await asyncio.sleep(gap)
-    logger.info(f"[Lecture] Session complete: {label}")
+
+    logger.info(f"[Lecture] Session complete: {label} — {sent_count}/{len(all_topics)} topics sent")
 
 
 def fire_lecture_session(label: str):
