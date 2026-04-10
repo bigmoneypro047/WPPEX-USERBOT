@@ -461,6 +461,28 @@ def test_promo():
     ), 200
 
 
+@app.route("/group-counts")
+def group_counts():
+    """Show member count for each resolved group."""
+    if not GROUPS:
+        return "No groups resolved yet.", 400
+    async def _fetch():
+        results = []
+        for g in GROUPS:
+            try:
+                full = await bot_client.get_entity(g)
+                count = (await bot_client.get_participants(g, limit=0)).total
+                results.append(f"ID: {full.id} | {full.title} | <b>{count} members</b>")
+            except Exception as e:
+                results.append(f"ID: {getattr(g,'id',g)} | Error: {e}")
+        return results
+    try:
+        rows = asyncio.run_coroutine_threadsafe(_fetch(), _loop).result(timeout=20)
+        return "<br>".join(rows), 200
+    except Exception as e:
+        return f"Error: {e}", 500
+
+
 @app.route("/member-debug")
 def member_debug():
     """Show detailed status of each member bot and their resolved groups."""
