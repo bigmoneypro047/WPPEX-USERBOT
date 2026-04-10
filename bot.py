@@ -1390,9 +1390,8 @@ async def run_lecture_session(label: str):
     history = _lecture_load_sent()
     now = time_mod.time()
 
-    # Shuffle all topics so order varies every session
-    all_topics = list(LECTURE_TOPICS.keys())
-    random.shuffle(all_topics)
+    # Pick 4 random topics every session (different mix each time)
+    all_topics = random.sample(list(LECTURE_TOPICS.keys()), min(4, len(LECTURE_TOPICS)))
 
     sent_count = 0
     for i, topic in enumerate(all_topics):
