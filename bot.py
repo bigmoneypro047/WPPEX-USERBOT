@@ -1669,10 +1669,10 @@ async def _fire_promo_for_group(target_group, bypass_lock_guard: bool = False):
             logger.info(f"[Promo] '{grp_title}' — approaching lock window, stopping conversation.")
             return
 
-        # For the bilingual group: randomly pick English or Indonesian (50/50)
+        # For the bilingual group: 70% Indonesian, 30% English
         send_text = text
         if _group_id(target_group) == BILINGUAL_GROUP_ID:
-            if random.random() < 0.5:
+            if random.random() < 0.7:
                 send_text = await _translate_cached(text)
                 logger.info(f"[Promo] Bot{bot_num} → ID language selected")
 
@@ -2309,8 +2309,8 @@ async def start_bot():
             await asyncio.sleep(random.randint(5, 20))
 
             chosen_client, chosen_group = random.choice(bots_for_group)
-            # 50/50 English or Indonesian reply
-            pool = GREETING_REPLIES_ID if random.random() < 0.5 else GREETING_REPLIES_EN
+            # 70% Indonesian, 30% English reply
+            pool = GREETING_REPLIES_ID if random.random() < 0.7 else GREETING_REPLIES_EN
             reply_text = random.choice(pool)
 
             await chosen_client.send_message(chosen_group, reply_text, reply_to=event.id)
