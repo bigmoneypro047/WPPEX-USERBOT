@@ -810,6 +810,43 @@ async def unlock_all_groups(label: str):
 # ── Bilingual (English + Indonesian) for the large group ────────────────────
 BILINGUAL_GROUP_ID = 3684122277   # QT Investment Group — 476 members
 
+# ── Greeting auto-reply ──────────────────────────────────────────────────────
+GREETING_KEYWORDS = {
+    "hello", "hi", "hey", "good morning", "good day", "good afternoon",
+    "good evening", "hello everyone", "hi everyone", "hey everyone",
+    "morning", "halo", "hai", "selamat pagi", "selamat siang",
+    "selamat malam", "selamat datang", "good night", "howdy",
+}
+
+GREETING_REPLIES_EN = [
+    "Hello! Great to see you here! 😊",
+    "Hey there! 👋 Welcome!",
+    "Good day! Hope you're doing well! 🌟",
+    "Hi! Glad to have you with us! 🙌",
+    "Hello! Wishing you a profitable day ahead! 💰",
+    "Morning! Ready for another great day of signals! 🌅",
+    "Hey! Good to see you! 💪 Stay tuned for today's signals! 📈",
+    "Hello friend! Glad you're here! 🙏",
+    "Hi! Welcome aboard! This group is changing lives daily 🔥",
+    "Good day! You're in the right place 💯",
+]
+
+GREETING_REPLIES_ID = [
+    "Halo! Senang bertemu di sini! 😊",
+    "Hai! 👋 Selamat datang!",
+    "Selamat siang! Semoga kamu baik-baik saja! 🌟",
+    "Hai! Senang ada kamu di sini! 🙌",
+    "Halo! Semoga hari ini menguntungkan! 💰",
+    "Pagi! Siap untuk sinyal hari ini! 🌅",
+    "Hai! Senang melihatmu! 💪 Pantau terus sinyalnya ya! 📈",
+    "Halo teman! Senang kamu ada di sini! 🙏",
+    "Hai! Selamat bergabung! Grup ini mengubah banyak kehidupan 🔥",
+    "Selamat datang! Kamu ada di tempat yang tepat 💯",
+]
+
+# Translation cache — avoids repeated API calls for same text
+_TRANSLATION_CACHE: dict = {}
+
 
 def _translate_chunk(text: str) -> str:
     """Translate one chunk (≤500 chars) EN→ID via MyMemory free API."""
@@ -849,6 +886,15 @@ async def _translate_to_indonesian(text: str) -> str:
         part = await loop.run_in_executor(None, _translate_chunk, chunk)
         translated_parts.append(part)
     return " ".join(translated_parts)
+
+
+async def _translate_cached(text: str) -> str:
+    """Translate EN→ID with in-memory cache so identical texts aren't re-fetched."""
+    if text in _TRANSLATION_CACHE:
+        return _TRANSLATION_CACHE[text]
+    result = await _translate_to_indonesian(text)
+    _TRANSLATION_CACHE[text] = result
+    return result
 
 
 def _group_id(group) -> int:
@@ -1623,8 +1669,15 @@ async def _fire_promo_for_group(target_group, bypass_lock_guard: bool = False):
             logger.info(f"[Promo] '{grp_title}' — approaching lock window, stopping conversation.")
             return
 
+        # For the bilingual group: randomly pick English or Indonesian (50/50)
+        send_text = text
+        if _group_id(target_group) == BILINGUAL_GROUP_ID:
+            if random.random() < 0.5:
+                send_text = await _translate_cached(text)
+                logger.info(f"[Promo] Bot{bot_num} → ID language selected")
+
         try:
-            sent = await client.send_message(group_entity, text, reply_to=reply_to)
+            sent = await client.send_message(group_entity, send_text, reply_to=reply_to)
             last_msg_id = sent.id
             logger.info(f"[Promo] Bot{bot_num} → '{getattr(target_group,'title',target_group.id)}'"
                         + (" [tag]" if reply_to else ""))
@@ -1632,7 +1685,7 @@ async def _fire_promo_for_group(target_group, bypass_lock_guard: bool = False):
         except FloodWaitError as e:
             await asyncio.sleep(e.seconds + 2)
             try:
-                sent = await client.send_message(group_entity, text, reply_to=reply_to)
+                sent = await client.send_message(group_entity, send_text, reply_to=reply_to)
                 last_msg_id = sent.id
             except Exception:
                 pass
@@ -2225,6 +2278,45 @@ async def start_bot():
                     logger.error(f"[Guard] Failed to kick '{name}': {kick_err}")
         except Exception as exc:
             logger.error(f"[Guard] Error: {exc}")
+
+    # ── Greeting auto-reply for the bilingual group ───────────────────────────
+    @bot_client.on(events.NewMessage(chats=[BILINGUAL_GROUP_ID], incoming=True))
+    async def greeting_reply(event):
+        """When any member sends a greeting, a random member bot replies."""
+        try:
+            sender_id = event.sender_id
+            # Skip PROFESSOR himself and member bots
+            if sender_id == PROFESSOR_ID:
+                return
+            text = (event.text or "").lower().strip()
+            # Only trigger on short messages that contain a greeting keyword
+            if len(text) > 60:
+                return
+            if not any(kw in text for kw in GREETING_KEYWORDS):
+                return
+
+            # Find member bots that have access to this group
+            bots_for_group = [
+                (client, entity)
+                for client, groups in MEMBER_CLIENTS
+                for entity in groups
+                if _bare_id(entity.id) == _bare_id(BILINGUAL_GROUP_ID)
+            ]
+            if not bots_for_group:
+                return
+
+            # Random human-like delay (5–20 seconds)
+            await asyncio.sleep(random.randint(5, 20))
+
+            chosen_client, chosen_group = random.choice(bots_for_group)
+            # 50/50 English or Indonesian reply
+            pool = GREETING_REPLIES_ID if random.random() < 0.5 else GREETING_REPLIES_EN
+            reply_text = random.choice(pool)
+
+            await chosen_client.send_message(chosen_group, reply_text, reply_to=event.id)
+            logger.info(f"[Greeting] ✓ Replied to greeting: '{text[:30]}' → '{reply_text[:40]}'")
+        except Exception as exc:
+            logger.error(f"[Greeting] ✗ {exc}")
 
     sched_thread = threading.Thread(target=run_scheduler, daemon=True)
     sched_thread.start()
