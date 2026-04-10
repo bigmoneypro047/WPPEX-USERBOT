@@ -807,11 +807,83 @@ async def unlock_all_groups(label: str):
             logger.error(f"[{label}] ✗ Failed to unlock '{title}': {type(e).__name__}: {e}")
 
 
+# ── Bilingual (English + Indonesian) for the large group ────────────────────
+BILINGUAL_GROUP_ID = 3684122277   # QT Investment Group — 476 members
+
+
+def _translate_chunk(text: str) -> str:
+    """Translate one chunk (≤500 chars) EN→ID via MyMemory free API."""
+    import urllib.parse
+    url = ("https://api.mymemory.translated.net/get?q="
+           + urllib.parse.quote(text[:499])
+           + "&langpair=en|id")
+    try:
+        resp = urllib.request.urlopen(url, timeout=10)
+        data = json.loads(resp.read())
+        result = data.get("responseData", {}).get("translatedText", "")
+        if result and data.get("responseStatus") == 200:
+            return result
+    except Exception as e:
+        logger.warning(f"[Translate] chunk failed: {e}")
+    return text   # fall back to original on error
+
+
+async def _translate_to_indonesian(text: str) -> str:
+    """Async wrapper — runs translation in executor so it doesn't block the loop."""
+    loop = asyncio.get_event_loop()
+    # Split long text into ≤490-char sentence chunks
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    chunks, current = [], ""
+    for s in sentences:
+        if len(current) + len(s) + 1 <= 490:
+            current = (current + " " + s).strip()
+        else:
+            if current:
+                chunks.append(current)
+            current = s
+    if current:
+        chunks.append(current)
+
+    translated_parts = []
+    for chunk in chunks:
+        part = await loop.run_in_executor(None, _translate_chunk, chunk)
+        translated_parts.append(part)
+    return " ".join(translated_parts)
+
+
+def _group_id(group) -> int:
+    """Extract integer group ID from a Telethon entity or raw int."""
+    return getattr(group, "id", group)
+
+
+async def _send_bilingual(group, english_msg: str, label: str):
+    """Send a message in English + Indonesian to the bilingual group."""
+    # Strip surrounding ** for clean translation, remember if bold
+    is_bold = english_msg.startswith("**") and english_msg.endswith("**")
+    plain = english_msg[2:-2] if is_bold else english_msg
+    indonesian = await _translate_to_indonesian(plain)
+    if is_bold:
+        bilingual = f"🌎 **{plain}**\n\n🇮🇩 **{indonesian}**"
+    else:
+        bilingual = f"🌎 {plain}\n\n🇮🇩 {indonesian}"
+    try:
+        await bot_client.send_message(group, bilingual, parse_mode="md")
+        logger.info(f"[{label}] ✓ Bilingual sent to '{getattr(group,'title',group)}'")
+    except FloodWaitError as e:
+        await asyncio.sleep(e.seconds)
+        await bot_client.send_message(group, bilingual, parse_mode="md")
+    except Exception as e:
+        logger.error(f"[{label}] ✗ Bilingual send failed: {e}")
+
+
 async def send_to_all_groups(message: str, label: str):
     for group in GROUPS:
         try:
-            await bot_client.send_message(group, message, parse_mode="md")
-            logger.info(f"[{label}] ✓ Sent to {group}")
+            if _group_id(group) == BILINGUAL_GROUP_ID:
+                await _send_bilingual(group, message, label)
+            else:
+                await bot_client.send_message(group, message, parse_mode="md")
+                logger.info(f"[{label}] ✓ Sent to {group}")
             await asyncio.sleep(2)
         except FloodWaitError as e:
             logger.warning(f"[{label}] FloodWait {e.seconds}s on {group}")
@@ -839,8 +911,11 @@ async def morning_unlock_with_greeting():
     await asyncio.sleep(2)
     for group in GROUPS:
         try:
-            await bot_client.send_message(group, greeting, parse_mode="md")
-            logger.info(f"[Morning Unlock] ✓ Greeting sent to {group}")
+            if _group_id(group) == BILINGUAL_GROUP_ID:
+                await _send_bilingual(group, greeting, "Morning Greeting")
+            else:
+                await bot_client.send_message(group, greeting, parse_mode="md")
+                logger.info(f"[Morning Unlock] ✓ Greeting sent to {group}")
             await asyncio.sleep(2)
         except Exception as e:
             logger.error(f"[Morning Unlock] ✗ {group}: {e}")
@@ -1247,12 +1322,15 @@ def _pick_next_lecture(used_in_session=None):
 
 
 async def send_one_lecture(msg: str, topic: str = ""):
-    """Bold-format one lecture message and send it to all groups."""
+    """Bold-format one lecture message and send to all groups (bilingual for large group)."""
     formatted = f"**{msg}**"
     for group in GROUPS:
         try:
-            await bot_client.send_message(group, formatted, parse_mode="md")
-            logger.info(f"[Lecture] ✓ '{topic}' → '{getattr(group, 'title', group.id)}'")
+            if _group_id(group) == BILINGUAL_GROUP_ID:
+                await _send_bilingual(group, formatted, f"Lecture/{topic}")
+            else:
+                await bot_client.send_message(group, formatted, parse_mode="md")
+                logger.info(f"[Lecture] ✓ '{topic}' → '{getattr(group, 'title', group.id)}'")
             await asyncio.sleep(2)
         except Exception as e:
             logger.error(f"[Lecture] ✗ {group}: {e}")
