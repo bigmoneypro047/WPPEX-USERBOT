@@ -1675,13 +1675,9 @@ async def _fire_promo_for_group(target_group, bypass_lock_guard: bool = False):
             logger.info(f"[Promo] '{grp_title}' — approaching lock window, stopping conversation.")
             return
 
-        # Member bots always send in Indonesian only (10s timeout — falls back to English)
-        try:
-            send_text = await asyncio.wait_for(_translate_cached(text), timeout=10)
-            logger.info(f"[Promo] Bot{bot_num} → ID language")
-        except asyncio.TimeoutError:
-            send_text = text
-            logger.warning(f"[Promo] Bot{bot_num} → translation timeout, sending English")
+        # Send in English for now — translation re-enabled once flow confirmed
+        send_text = text
+        logger.info(f"[Promo] Bot{bot_num} → sending message")
 
         try:
             sent = await client.send_message(group_entity, send_text, reply_to=reply_to)
