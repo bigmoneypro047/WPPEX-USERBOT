@@ -910,15 +910,15 @@ def _group_id(group) -> int:
 
 
 async def _send_bilingual(group, english_msg: str, label: str):
-    """Send a message in English + Indonesian to the bilingual group."""
+    """Send a message in English + Indonesian to any group."""
     # Strip surrounding ** for clean translation, remember if bold
     is_bold = english_msg.startswith("**") and english_msg.endswith("**")
     plain = english_msg[2:-2] if is_bold else english_msg
     indonesian = await _translate_to_indonesian(plain)
     if is_bold:
-        bilingual = f"🌎 **{plain}**\n\n🇮🇩 **{indonesian}**"
+        bilingual = f"🇬🇧 **{plain}**\n\n🇮🇩 **{indonesian}**"
     else:
-        bilingual = f"🌎 {plain}\n\n🇮🇩 {indonesian}"
+        bilingual = f"🇬🇧 {plain}\n\n🇮🇩 {indonesian}"
     try:
         await bot_client.send_message(group, bilingual, parse_mode="md")
         logger.info(f"[{label}] ✓ Bilingual sent to '{getattr(group,'title',group)}'")
@@ -932,11 +932,7 @@ async def _send_bilingual(group, english_msg: str, label: str):
 async def send_to_all_groups(message: str, label: str):
     for group in GROUPS:
         try:
-            if _group_id(group) == BILINGUAL_GROUP_ID:
-                await _send_bilingual(group, message, label)
-            else:
-                await bot_client.send_message(group, message, parse_mode="md")
-                logger.info(f"[{label}] ✓ Sent to {group}")
+            await _send_bilingual(group, message, label)
             await asyncio.sleep(2)
         except FloodWaitError as e:
             logger.warning(f"[{label}] FloodWait {e.seconds}s on {group}")
@@ -964,11 +960,7 @@ async def morning_unlock_with_greeting():
     await asyncio.sleep(2)
     for group in GROUPS:
         try:
-            if _group_id(group) == BILINGUAL_GROUP_ID:
-                await _send_bilingual(group, greeting, "Morning Greeting")
-            else:
-                await bot_client.send_message(group, greeting, parse_mode="md")
-                logger.info(f"[Morning Unlock] ✓ Greeting sent to {group}")
+            await _send_bilingual(group, greeting, "Morning Greeting")
             await asyncio.sleep(2)
         except Exception as e:
             logger.error(f"[Morning Unlock] ✗ {group}: {e}")
@@ -1368,15 +1360,11 @@ def _pick_next_lecture(used_in_session=None):
 
 
 async def send_one_lecture(msg: str, topic: str = ""):
-    """Bold-format one lecture message and send to all groups (bilingual for large group)."""
+    """Bold-format one lecture message and send to all groups in English + Indonesian."""
     formatted = f"**{msg}**"
     for group in GROUPS:
         try:
-            if _group_id(group) == BILINGUAL_GROUP_ID:
-                await _send_bilingual(group, formatted, f"Lecture/{topic}")
-            else:
-                await bot_client.send_message(group, formatted, parse_mode="md")
-                logger.info(f"[Lecture] ✓ '{topic}' → '{getattr(group, 'title', group.id)}'")
+            await _send_bilingual(group, formatted, f"Lecture/{topic}")
             await asyncio.sleep(2)
         except Exception as e:
             logger.error(f"[Lecture] ✗ {group}: {e}")
@@ -1687,12 +1675,9 @@ async def _fire_promo_for_group(target_group, bypass_lock_guard: bool = False):
             logger.info(f"[Promo] '{grp_title}' — approaching lock window, stopping conversation.")
             return
 
-        # For the bilingual group: 70% Indonesian, 30% English
-        send_text = text
-        if _group_id(target_group) == BILINGUAL_GROUP_ID:
-            if random.random() < 0.7:
-                send_text = await _translate_cached(text)
-                logger.info(f"[Promo] Bot{bot_num} → ID language selected")
+        # Member bots always send in Indonesian only
+        send_text = await _translate_cached(text)
+        logger.info(f"[Promo] Bot{bot_num} → ID language")
 
         try:
             sent = await client.send_message(group_entity, send_text, reply_to=reply_to)
@@ -2297,8 +2282,8 @@ async def start_bot():
         except Exception as exc:
             logger.error(f"[Guard] Error: {exc}")
 
-    # ── Greeting auto-reply for the bilingual group ───────────────────────────
-    @bot_client.on(events.NewMessage(chats=[BILINGUAL_GROUP_ID], incoming=True))
+    # ── Greeting auto-reply for all active groups ─────────────────────────────
+    @bot_client.on(events.NewMessage(chats=[g.id for g in GROUPS], incoming=True))
     async def greeting_reply(event):
         """When any member sends a greeting, a random member bot replies."""
         try:
@@ -2313,12 +2298,12 @@ async def start_bot():
             if not any(kw in text for kw in GREETING_KEYWORDS):
                 return
 
-            # Find member bots that have access to this group
+            # Find member bots that have access to this specific group
             bots_for_group = [
                 (client, entity)
                 for client, groups in MEMBER_CLIENTS
                 for entity in groups
-                if _bare_id(entity.id) == _bare_id(BILINGUAL_GROUP_ID)
+                if _bare_id(entity.id) == _bare_id(event.chat_id)
             ]
             if not bots_for_group:
                 return
@@ -2327,9 +2312,8 @@ async def start_bot():
             await asyncio.sleep(random.randint(5, 20))
 
             chosen_client, chosen_group = random.choice(bots_for_group)
-            # 70% Indonesian, 30% English reply
-            pool = GREETING_REPLIES_ID if random.random() < 0.7 else GREETING_REPLIES_EN
-            reply_text = random.choice(pool)
+            # Always reply in Indonesian
+            reply_text = random.choice(GREETING_REPLIES_ID)
 
             await chosen_client.send_message(chosen_group, reply_text, reply_to=event.id)
             logger.info(f"[Greeting] ✓ Replied to greeting: '{text[:30]}' → '{reply_text[:40]}'")
