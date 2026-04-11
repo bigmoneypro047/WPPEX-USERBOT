@@ -34,9 +34,12 @@ PORT = int(os.environ.get("PORT", 10000))
 
 NIGERIA_TZ = pytz.timezone("Africa/Lagos")
 
-# Only the one active group — hardcoded to bypass deleted group env vars
-# When new groups are created, add their IDs here and update Render env vars
-_ACTIVE_GROUP_IDS = ["-1003542874163"]   # QT Investment Group (11 members)
+# Both active groups — hardcoded to bypass deleted group env vars
+# When new groups are created, add their IDs here
+_ACTIVE_GROUP_IDS = [
+    "-1003542874163",   # QT Investment Group (11 members)
+    "-1003814574407",   # QT Lecturing Group  (8 members)
+]
 RAW_GROUPS = _ACTIVE_GROUP_IDS
 GROUPS = []          # filled with resolved InputPeerChannel objects at startup
 
