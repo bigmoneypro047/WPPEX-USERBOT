@@ -25,15 +25,19 @@ logger = logging.getLogger(__name__)
 
 API_ID = int(os.environ["TELEGRAM_API_ID"])
 API_HASH = os.environ["TELEGRAM_API_HASH"]
-GROUP_1 = os.environ["TELEGRAM_GROUP_1"]
-GROUP_2 = os.environ["TELEGRAM_GROUP_2"]
-GROUP_3 = os.environ["TELEGRAM_GROUP_3"]
+GROUP_1 = os.environ.get("TELEGRAM_GROUP_1", "")
+GROUP_2 = os.environ.get("TELEGRAM_GROUP_2", "")
+GROUP_3 = os.environ.get("TELEGRAM_GROUP_3", "")
 SESSION_STRING = os.environ.get("TELEGRAM_SESSION_STRING", "")
 FLASK_SECRET = os.environ.get("SESSION_SECRET", "wppex-secret-2024")
 PORT = int(os.environ.get("PORT", 10000))
 
 NIGERIA_TZ = pytz.timezone("Africa/Lagos")
-RAW_GROUPS = [GROUP_1.strip(), GROUP_2.strip(), GROUP_3.strip()]
+
+# Only the one active group — hardcoded to bypass deleted group env vars
+# When new groups are created, add their IDs here and update Render env vars
+_ACTIVE_GROUP_IDS = ["-1003542874163"]   # QT Investment Group (11 members)
+RAW_GROUPS = _ACTIVE_GROUP_IDS
 GROUPS = []          # filled with resolved InputPeerChannel objects at startup
 
 TEST_GROUP_RAW = "-1003814574407"   # dedicated test group — test-send goes here only
@@ -363,7 +367,7 @@ def debug_groups():
     header = (
         f"Bot account dialogs ({len(lines)} total)\n"
         f"Looking for IDs: {target_ids}\n"
-        f"Groups resolved so far: {len(GROUPS)}/3\n"
+        f"Groups resolved so far: {len(GROUPS)}/{len(RAW_GROUPS)}\n"
         f"{'='*60}\n"
     )
     body = "\n".join(lines) if lines else "(no dialogs found)"
@@ -378,7 +382,7 @@ def test_send():
     msg = (
         "✅ *PROFESSOR TEST MESSAGE*\n\n"
         "Message sending is working correctly.\n\n"
-        f"Main groups loaded: {len(GROUPS)}/3"
+        f"Main groups loaded: {len(GROUPS)}/{len(RAW_GROUPS)}"
     )
 
     if TEST_GROUP:
@@ -394,7 +398,7 @@ def test_send():
     elif GROUPS:
         # Fallback: test group not found, use main groups
         asyncio.run_coroutine_threadsafe(send_to_all_groups(msg, "TEST-SEND"), _loop)
-        return f"📨 Test message sent to {len(GROUPS)}/3 main groups (test group not available).", 200
+        return f"📨 Test message sent to {len(GROUPS)}/{len(RAW_GROUPS)} main groups (test group not available).", 200
     else:
         return "❌ No groups resolved yet — check Render logs for startup errors.", 400
 
@@ -498,7 +502,7 @@ def member_debug():
     for i, (client, groups) in enumerate(MEMBER_CLIENTS):
         grp_names = [getattr(g, 'title', str(g.id)) for g in groups]
         lines.append(
-            f"<b>Bot {i+1}:</b> {len(groups)}/3 groups → "
+            f"<b>Bot {i+1}:</b> {len(groups)}/{len(RAW_GROUPS)} groups → "
             + (", ".join(grp_names) if grp_names else "⚠️ NO GROUPS FOUND")
         )
     if not MEMBER_CLIENTS:
@@ -1888,7 +1892,7 @@ async def start_member_bots():
             me = await client.get_me()
             logger.info(f"[MemberBot {idx+1}] Connected as {me.first_name} (@{me.username})")
             groups = await _resolve_member_groups(client)
-            logger.info(f"[MemberBot {idx+1}] {len(groups)}/3 groups resolved.")
+            logger.info(f"[MemberBot {idx+1}] {len(groups)}/{len(RAW_GROUPS)} groups resolved.")
             MEMBER_CLIENTS.append((client, groups))
         except Exception as e:
             logger.error(f"[MemberBot {idx+1}] Failed to start: {e}")
@@ -2156,7 +2160,7 @@ async def resolve_groups():
     else:
         logger.warning(f"[Startup] ⚠ Test group (id={test_bare}) not found — /test-send will use main groups.")
 
-    logger.info(f"[Startup] {len(GROUPS)}/3 main groups ready. Test group: {'✓' if TEST_GROUP else '✗'}")
+    logger.info(f"[Startup] {len(GROUPS)}/{len(RAW_GROUPS)} main groups ready. Test group: {'✓' if TEST_GROUP else '✗'}")
 
 
 async def start_bot():
