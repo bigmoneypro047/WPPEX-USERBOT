@@ -475,38 +475,34 @@ def test_promo():
 @app.route("/force-morning")
 def force_morning():
     """
-    Manually trigger the full 3:00 AM morning sequence:
-    unlock → greeting → lecture → signal msgs → unlock.
-    Use this if the scheduler missed the 3:00 AM slot due to a restart.
+    Manually send PROFESSOR's morning greeting to all groups right now.
+    Blocks until all sends complete and reports exact result per group.
+    Use this when the scheduler missed the 3:00 AM slot.
     """
     if not GROUPS:
         return "❌ No groups resolved yet — bot still starting up.", 400
 
-    async def _run():
-        # 1. Unlock + greeting
-        await morning_unlock_with_greeting()
-        await asyncio.sleep(5)
-        # 2. Lecture session
-        await asyncio.sleep(60 * 30)   # wait 30 min (mirrors 3:30 AM lock)
-        await lock_all_groups("Extra Signal (force-morning)")
-        asyncio.run_coroutine_threadsafe(run_lecture_session("Extra Signal Lecture"), _loop)
-        await asyncio.sleep(60 * 20)   # 20 min gap before signal msg
-        # 3. Signal messages
-        for group in GROUPS:
-            await _send_bilingual(group, MSG_350AM, "Extra Signal Warn")
-            await asyncio.sleep(2)
-        await asyncio.sleep(60 * 10)
-        for group in GROUPS:
-            await _send_bilingual(group, MSG_400AM, "Extra Signal")
-            await asyncio.sleep(2)
-        await asyncio.sleep(60 * 5)
-        await unlock_all_groups("Extra Signal (force-morning)")
+    results = []
 
-    asyncio.run_coroutine_threadsafe(morning_unlock_with_greeting(), _loop)
-    return (
-        "✅ Morning greeting sent to all groups now. "
-        "Lock + lecture + signals will follow on their normal schedule."
-    ), 200
+    async def _send():
+        await unlock_all_groups("Force-Morning Unlock")
+        greeting = get_morning_greeting()
+        for group in GROUPS:
+            title = getattr(group, 'title', str(group.id))
+            try:
+                await _send_bilingual(group, greeting, "Force-Morning")
+                results.append(f"✅ Sent to '{title}'")
+            except Exception as e:
+                results.append(f"❌ Failed for '{title}': {type(e).__name__}: {e}")
+            await asyncio.sleep(2)
+
+    fut = asyncio.run_coroutine_threadsafe(_send(), _loop)
+    try:
+        fut.result(timeout=90)   # wait up to 90s for all translations + sends
+    except Exception as e:
+        results.append(f"❌ Execution error: {e}")
+
+    return "<br>".join(results) if results else "❌ No results — GROUPS may be empty.", 200
 
 
 @app.route("/group-counts")
