@@ -506,6 +506,42 @@ def force_morning():
     return "<br>".join(results) if results else "❌ No results — GROUPS may be empty.", 200
 
 
+@app.route("/force-signal")
+def force_signal():
+    """
+    Send the warning + instruction signal messages to all groups immediately.
+    Use to verify translation is working on real signal messages.
+    """
+    if not GROUPS:
+        return "❌ No groups resolved yet — bot still starting up.", 400
+
+    results = []
+
+    async def _send():
+        for group in GROUPS:
+            title = getattr(group, 'title', str(group.id))
+            try:
+                await _send_bilingual(group, MSG_1150AM, "Force-Signal-Warn")
+                results.append(f"✅ Warning sent to '{title}'")
+            except Exception as e:
+                results.append(f"❌ Warning failed for '{title}': {e}")
+            await asyncio.sleep(3)
+            try:
+                await _send_bilingual(group, MSG_1200PM, "Force-Signal-Inst")
+                results.append(f"✅ Instructions sent to '{title}'")
+            except Exception as e:
+                results.append(f"❌ Instructions failed for '{title}': {e}")
+            await asyncio.sleep(3)
+
+    fut = asyncio.run_coroutine_threadsafe(_send(), _loop)
+    try:
+        fut.result(timeout=180)
+    except Exception as e:
+        results.append(f"❌ Execution error: {e}")
+
+    return "<br>".join(results) if results else "❌ No results.", 200
+
+
 @app.route("/group-counts")
 def group_counts():
     """Show member count for each resolved group."""
@@ -1034,7 +1070,7 @@ async def send_to_all_groups(message: str, label: str):
         except FloodWaitError as e:
             logger.warning(f"[{label}] FloodWait {e.seconds}s on {group}")
             await asyncio.sleep(e.seconds)
-            await bot_client.send_message(group, message, parse_mode="md")
+            await _send_bilingual(group, message, label)   # retry WITH translation
         except Exception as e:
             logger.error(f"[{label}] ✗ {group}: {e}")
 
