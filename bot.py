@@ -34,14 +34,18 @@ PORT = int(os.environ.get("PORT", 10000))
 
 NIGERIA_TZ = pytz.timezone("Africa/Lagos")
 
-# Both active groups — hardcoded to bypass deleted group env vars
+# All active groups — hardcoded to bypass deleted group env vars
 # When new groups are created, add their IDs here
 _ACTIVE_GROUP_IDS = [
-    "-1003542874163",   # QT Investment Group (11 members)
-    "-1003814574407",   # QT Lecturing Group  (8 members)
+    "-1003542874163",   # QT Investment Group (11 members)   — PROFESSOR + member bots
+    "-1003814574407",   # QT Grupo Nicaragua  (8 members)    — PROFESSOR + member bots
+    "-1003753234001",   # Indonesia group 2                  — PROFESSOR only, Indonesian only
 ]
 RAW_GROUPS = _ACTIVE_GROUP_IDS
 GROUPS = []          # filled with resolved InputPeerChannel objects at startup
+
+# Groups where ONLY PROFESSOR sends — member bots are excluded from these
+PROFESSOR_ONLY_IDS = {3753234001}
 
 TEST_GROUP_RAW = "-1003814574407"   # dedicated test group — test-send goes here only
 TEST_GROUP = None   # filled at startup
@@ -814,10 +818,11 @@ async def unlock_all_groups(label: str):
             logger.error(f"[{label}] ✗ Failed to unlock '{title}': {type(e).__name__}: {e}")
 
 
-# ── Bilingual group settings ─────────────────────────────────────────────────
-BILINGUAL_GROUP_ID  = 3684122277   # legacy (deleted) — kept to avoid reference errors
-INDONESIAN_GROUP_ID = 3542874163   # QT Investment Group  → English + Indonesian 🇮🇩
-SPANISH_GROUP_ID    = 3814574407   # QT Grupo Nicaragua   → English + Spanish    🇳🇮
+# ── Per-group language settings ──────────────────────────────────────────────
+BILINGUAL_GROUP_ID    = 3684122277   # legacy (deleted) — kept to avoid reference errors
+INDONESIAN_GROUP_ID   = 3542874163   # QT Investment Group  → 🇬🇧 English + 🇮🇩 Indonesian
+SPANISH_GROUP_ID      = 3814574407   # QT Grupo Nicaragua   → 🇬🇧 English + 🇳🇮 Spanish
+INDONESIAN_ONLY_ID    = 3753234001   # Indonesia group 2    → 🇮🇩 Indonesian ONLY (no English)
 
 # ── Greeting auto-reply ──────────────────────────────────────────────────────
 GREETING_KEYWORDS = {
@@ -931,14 +936,35 @@ def _group_id(group) -> int:
 
 async def _send_bilingual(group, english_msg: str, label: str):
     """
-    Send English + translated message to a group.
-    - QT Investment Group  (INDONESIAN_GROUP_ID) → 🇬🇧 English + 🇮🇩 Indonesian
-    - QT Grupo Nicaragua   (SPANISH_GROUP_ID)    → 🇬🇧 English + 🇳🇮 Spanish
+    Send PROFESSOR message to a group — language format depends on the group:
+      INDONESIAN_GROUP_ID  → 🇬🇧 English + 🇮🇩 Indonesian (bilingual)
+      SPANISH_GROUP_ID     → 🇬🇧 English + 🇳🇮 Spanish    (bilingual)
+      INDONESIAN_ONLY_ID   → 🇮🇩 Indonesian ONLY           (no English)
     """
     is_bold = english_msg.startswith("**") and english_msg.endswith("**")
     plain = english_msg[2:-2] if is_bold else english_msg
 
     gid = _group_id(group)
+
+    # ── Indonesian-only group ─────────────────────────────────────────────────
+    if gid == INDONESIAN_ONLY_ID:
+        translated = await _translate_to_indonesian(plain)
+        msg_out = f"<b>{translated}</b>" if is_bold else translated
+        try:
+            await bot_client.send_message(group, msg_out, parse_mode="html")
+            logger.info(f"[{label}] ✓ Sent (🇮🇩 only) to '{getattr(group,'title',group)}'")
+        except FloodWaitError as e:
+            await asyncio.sleep(e.seconds)
+            await bot_client.send_message(group, msg_out, parse_mode="html")
+        except Exception as e:
+            logger.error(f"[{label}] ✗ Failed (🇮🇩 only) '{getattr(group,'title',group)}': {e}")
+            try:
+                await bot_client.send_message(group, translated)
+            except Exception:
+                pass
+        return
+
+    # ── Bilingual groups ──────────────────────────────────────────────────────
     if gid == SPANISH_GROUP_ID:
         translated = await _translate_to_spanish(plain)
         flag2 = "🇳🇮"
@@ -1890,8 +1916,15 @@ async def setup_member_event_handlers(client, groups, bot_idx: int, member_ids: 
 
 
 async def _resolve_member_groups(client) -> list:
-    """Scan dialogs for a member bot client and return the 3 main group entities."""
-    target_ids = {_bare_id(r): r.strip() for r in RAW_GROUPS}
+    """
+    Scan dialogs for a member bot and return group entities.
+    Groups in PROFESSOR_ONLY_IDS are excluded — member bots don't send there.
+    """
+    target_ids = {
+        _bare_id(r): r.strip()
+        for r in RAW_GROUPS
+        if _bare_id(r) not in PROFESSOR_ONLY_IDS
+    }
     found = {}
     for folder in (0, 1):
         if len(found) == len(target_ids):
