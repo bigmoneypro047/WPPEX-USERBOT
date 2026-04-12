@@ -965,20 +965,40 @@ _TRANSLATION_CACHE: dict = {}
 
 
 def _translate_chunk_lang(text: str, lang: str, src: str = "en") -> str:
-    """Translate one chunk (≤500 chars) {src}→{lang} via MyMemory free API."""
+    """Translate text via Google Translate (unofficial), with MyMemory as fallback."""
     import urllib.parse
-    url = ("https://api.mymemory.translated.net/get?q="
-           + urllib.parse.quote(text[:499])
-           + f"&langpair={src}|{lang}")
+
+    # ── Primary: Google Translate unofficial (no key, high limits) ──────────
     try:
+        url = (
+            "https://translate.googleapis.com/translate_a/single"
+            "?client=gtx&sl=" + src + "&tl=" + lang + "&dt=t&q="
+            + urllib.parse.quote(text[:4999])
+        )
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        resp = urllib.request.urlopen(req, timeout=12)
+        data = json.loads(resp.read())
+        # Response format: [[[translated, original, ...], ...], ...]
+        translated = "".join(part[0] for part in data[0] if part[0])
+        if translated:
+            return translated
+    except Exception as e:
+        logger.warning(f"[Translate] Google ({src}→{lang}) failed: {e}")
+
+    # ── Fallback: MyMemory ───────────────────────────────────────────────────
+    try:
+        url = ("https://api.mymemory.translated.net/get?q="
+               + urllib.parse.quote(text[:499])
+               + f"&langpair={src}|{lang}")
         resp = urllib.request.urlopen(url, timeout=10)
         data = json.loads(resp.read())
         result = data.get("responseData", {}).get("translatedText", "")
-        if result and data.get("responseStatus") == 200:
+        if result and str(data.get("responseStatus")) == "200":
             return result
     except Exception as e:
-        logger.warning(f"[Translate] chunk ({lang}) failed: {e}")
-    return text   # fall back to original on error
+        logger.warning(f"[Translate] MyMemory ({src}→{lang}) failed: {e}")
+
+    return text   # final fallback — return original
 
 
 def _translate_chunk(text: str) -> str:
@@ -987,26 +1007,23 @@ def _translate_chunk(text: str) -> str:
 
 
 async def _translate_text(text: str, lang: str, src: str = "en") -> str:
-    """Async translate {src}→{lang}, splitting into ≤490-char sentence chunks."""
+    """Async translate {src}→{lang}. Google Translate handles large texts natively."""
     loop = asyncio.get_event_loop()
-    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
-    chunks, current = [], ""
-    for s in sentences:
-        if len(current) + len(s) + 1 <= 490:
-            current = (current + " " + s).strip()
-        else:
-            if current:
-                chunks.append(current)
-            current = s
-    if current:
-        chunks.append(current)
+    # Google Translate supports up to ~5000 chars in one call — no chunking needed
+    # Only chunk if text exceeds that limit
+    if len(text.strip()) <= 4800:
+        return await loop.run_in_executor(
+            None, lambda: _translate_chunk_lang(text.strip(), lang, src)
+        )
+    # For very long texts, split on double-newlines (paragraph breaks)
+    paragraphs = [p.strip() for p in text.strip().split("\n\n") if p.strip()]
     translated_parts = []
-    for chunk in chunks:
+    for para in paragraphs:
         part = await loop.run_in_executor(
-            None, lambda c=chunk: _translate_chunk_lang(c, lang, src)
+            None, lambda p=para: _translate_chunk_lang(p, lang, src)
         )
         translated_parts.append(part)
-    return " ".join(translated_parts)
+    return "\n\n".join(translated_parts)
 
 
 async def _translate_to_indonesian(text: str) -> str:
