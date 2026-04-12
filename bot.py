@@ -551,6 +551,51 @@ def group_counts():
         return f"Error: {e}", 500
 
 
+@app.route("/debug")
+def debug():
+    """Show live group IDs, language routing, and a real translation sample."""
+    lines = ["<pre>"]
+    lines.append(f"Constants:")
+    lines.append(f"  INDONESIAN_GROUP_ID = {INDONESIAN_GROUP_ID}")
+    lines.append(f"  SPANISH_GROUP_ID    = {SPANISH_GROUP_ID}")
+    lines.append(f"  INDONESIAN_ONLY_ID  = {INDONESIAN_ONLY_ID}")
+    lines.append(f"  TEST_GROUP_RAW      = {TEST_GROUP_RAW}")
+    lines.append("")
+    lines.append(f"Resolved GROUPS ({len(GROUPS)}):")
+    for g in GROUPS:
+        gid = _group_id(g)
+        if gid == INDONESIAN_ONLY_ID:
+            lang = "ID ONLY"
+        elif gid == SPANISH_GROUP_ID:
+            lang = "EN+ES"
+        else:
+            lang = "EN+ID"
+        match = "✅" if gid in (INDONESIAN_GROUP_ID, SPANISH_GROUP_ID, INDONESIAN_ONLY_ID) else "⚠ ID NOT MATCHED"
+        lines.append(f"  '{g.title}' → id={gid} → {lang} {match}")
+    lines.append("")
+    if TEST_GROUP:
+        lines.append(f"TEST_GROUP: '{TEST_GROUP.title}' id={TEST_GROUP.id}")
+    else:
+        lines.append("TEST_GROUP: NOT RESOLVED")
+    lines.append("")
+
+    async def _translate():
+        sample = "Good morning, signals are ready today."
+        id_result = await _translate_to_indonesian(sample)
+        es_result = await _translate_to_spanish(sample)
+        return id_result, es_result
+    try:
+        id_r, es_r = asyncio.run_coroutine_threadsafe(_translate(), _loop).result(timeout=30)
+        lines.append(f"Translation test:")
+        lines.append(f"  EN: Good morning, signals are ready today.")
+        lines.append(f"  ID: {id_r}")
+        lines.append(f"  ES: {es_r}")
+    except Exception as e:
+        lines.append(f"Translation test FAILED: {e}")
+    lines.append("</pre>")
+    return "\n".join(lines), 200
+
+
 @app.route("/member-debug")
 def member_debug():
     """Show detailed status of each member bot and their resolved groups."""
