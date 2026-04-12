@@ -48,7 +48,7 @@ GROUPS = []          # filled with resolved InputPeerChannel objects at startup
 # Groups where ONLY PROFESSOR sends — member bots are excluded from these
 PROFESSOR_ONLY_IDS = {3753234001}
 
-TEST_GROUP_RAW = "-1003814574407"   # dedicated test group — test-send goes here only
+TEST_GROUP_RAW = "-1003718676042"   # dedicated test group — test-send goes here only
 TEST_GROUP = None   # filled at startup
 
 # ── Member bots (4 accounts that chat in the groups to keep them active) ─────
@@ -394,7 +394,6 @@ def test_send():
     )
 
     if TEST_GROUP:
-        # Send only to the dedicated test group
         async def _send_test():
             try:
                 await bot_client.send_message(TEST_GROUP, msg, parse_mode="md")
@@ -403,10 +402,6 @@ def test_send():
                 logger.error(f"[TEST-SEND] ✗ {e}")
         asyncio.run_coroutine_threadsafe(_send_test(), _loop)
         return f"📨 Test message sent to test group '{TEST_GROUP.title}' — check that group in Telegram.", 200
-    elif GROUPS:
-        # Fallback: test group not found, use main groups
-        asyncio.run_coroutine_threadsafe(send_to_all_groups(msg, "TEST-SEND"), _loop)
-        return f"📨 Test message sent to {len(GROUPS)}/{len(RAW_GROUPS)} main groups (test group not available).", 200
     else:
         return "❌ No groups resolved yet — check Render logs for startup errors.", 400
 
@@ -476,66 +471,58 @@ def test_promo():
 @app.route("/force-morning")
 def force_morning():
     """
-    Manually send PROFESSOR's morning greeting to all groups right now.
-    Blocks until all sends complete and reports exact result per group.
-    Use this when the scheduler missed the 3:00 AM slot.
+    Test PROFESSOR's morning greeting — sends to TEST GROUP ONLY, never to live groups.
     """
-    if not GROUPS:
-        return "❌ No groups resolved yet — bot still starting up.", 400
+    if not TEST_GROUP:
+        return "❌ Test group not resolved yet — bot still starting up.", 400
 
     results = []
 
     async def _send():
-        await unlock_all_groups("Force-Morning Unlock")
         greeting = get_morning_greeting()
-        for group in GROUPS:
-            title = getattr(group, 'title', str(group.id))
-            try:
-                await _send_bilingual(group, greeting, "Force-Morning")
-                results.append(f"✅ Sent to '{title}'")
-            except Exception as e:
-                results.append(f"❌ Failed for '{title}': {type(e).__name__}: {e}")
-            await asyncio.sleep(2)
+        title = getattr(TEST_GROUP, 'title', str(TEST_GROUP.id))
+        try:
+            await _send_bilingual(TEST_GROUP, greeting, "Force-Morning")
+            results.append(f"✅ Sent to TEST GROUP '{title}'")
+        except Exception as e:
+            results.append(f"❌ Failed for '{title}': {type(e).__name__}: {e}")
 
     fut = asyncio.run_coroutine_threadsafe(_send(), _loop)
     try:
-        fut.result(timeout=90)   # wait up to 90s for all translations + sends
+        fut.result(timeout=90)
     except Exception as e:
         results.append(f"❌ Execution error: {e}")
 
-    return "<br>".join(results) if results else "❌ No results — GROUPS may be empty.", 200
+    return "<br>".join(results) if results else "❌ No results.", 200
 
 
 @app.route("/force-signal")
 def force_signal():
     """
-    Send the warning + instruction signal messages to all groups immediately.
-    Use to verify translation is working on real signal messages.
+    Test signal messages with translation — sends to TEST GROUP ONLY, never to live groups.
     """
-    if not GROUPS:
-        return "❌ No groups resolved yet — bot still starting up.", 400
+    if not TEST_GROUP:
+        return "❌ Test group not resolved yet — bot still starting up.", 400
 
     results = []
 
     async def _send():
-        for group in GROUPS:
-            title = getattr(group, 'title', str(group.id))
-            try:
-                await _send_bilingual(group, MSG_1150AM, "Force-Signal-Warn")
-                results.append(f"✅ Warning sent to '{title}'")
-            except Exception as e:
-                results.append(f"❌ Warning failed for '{title}': {e}")
-            await asyncio.sleep(3)
-            try:
-                await _send_bilingual(group, MSG_1200PM, "Force-Signal-Inst")
-                results.append(f"✅ Instructions sent to '{title}'")
-            except Exception as e:
-                results.append(f"❌ Instructions failed for '{title}': {e}")
-            await asyncio.sleep(3)
+        title = getattr(TEST_GROUP, 'title', str(TEST_GROUP.id))
+        try:
+            await _send_bilingual(TEST_GROUP, MSG_1150AM, "Force-Signal-Warn")
+            results.append(f"✅ Warning sent to TEST GROUP '{title}'")
+        except Exception as e:
+            results.append(f"❌ Warning failed: {e}")
+        await asyncio.sleep(3)
+        try:
+            await _send_bilingual(TEST_GROUP, MSG_1200PM, "Force-Signal-Inst")
+            results.append(f"✅ Instructions sent to TEST GROUP '{title}'")
+        except Exception as e:
+            results.append(f"❌ Instructions failed: {e}")
 
     fut = asyncio.run_coroutine_threadsafe(_send(), _loop)
     try:
-        fut.result(timeout=180)
+        fut.result(timeout=120)
     except Exception as e:
         results.append(f"❌ Execution error: {e}")
 
