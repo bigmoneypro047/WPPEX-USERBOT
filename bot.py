@@ -33,6 +33,15 @@ SESSION_STRING = os.environ.get("TELEGRAM_SESSION_STRING", "")
 FLASK_SECRET = os.environ.get("SESSION_SECRET", "wppex-secret-2024")
 PORT = int(os.environ.get("PORT", 10000))
 
+# Known public URL — RENDER_EXTERNAL_URL is set automatically by Render,
+# but we hardcode the real URL as a guaranteed fallback so keep_alive always
+# hits the external endpoint (localhost pings do NOT reset Render's inactivity timer)
+RENDER_PUBLIC_URL = os.environ.get(
+    "RENDER_EXTERNAL_URL", "https://wppex-userbot.onrender.com"
+).rstrip("/")
+
+_BOT_START_TIME = time_mod.time()   # epoch seconds — used by /ping uptime display
+
 NIGERIA_TZ = pytz.timezone("Africa/Lagos")
 
 # All active groups — hardcoded to bypass deleted group env vars
@@ -328,7 +337,30 @@ RUNNING_PAGE = STYLE + """
 
 @app.route("/ping")
 def ping():
-    return "pong", 200
+    """Health check — returns JSON with bot status, uptime, and current WAT time."""
+    uptime_secs = int(time_mod.time() - _BOT_START_TIME)
+    uptime_h = uptime_secs // 3600
+    uptime_m = (uptime_secs % 3600) // 60
+    uptime_s = uptime_secs % 60
+    wat_now  = datetime.now(NIGERIA_TZ).strftime("%Y-%m-%d %H:%M:%S WAT")
+    tg_connected = (
+        bot_client is not None and bot_client.is_connected()
+        if "bot_client" in globals() else False
+    )
+    member_alive = sum(
+        1 for entry in MEMBER_CLIENTS
+        if entry and entry[0] is not None and entry[0].is_connected()
+    )
+    payload = {
+        "status": "alive",
+        "uptime": f"{uptime_h}h {uptime_m}m {uptime_s}s",
+        "wat_time": wat_now,
+        "telegram_connected": tg_connected,
+        "member_bots_connected": member_alive,
+        "groups_loaded": len(GROUPS),
+        "public_url": RENDER_PUBLIC_URL,
+    }
+    return json.dumps(payload, indent=2), 200, {"Content-Type": "application/json"}
 
 
 @app.route("/test-lock")
@@ -2593,20 +2625,35 @@ async def start_bot():
 
 def keep_alive():
     """
-    Ping own /ping endpoint every 8 minutes so Render never spins the service down.
-    Also logs the heartbeat so we can confirm the bot is alive in the logs.
+    Ping own external /ping endpoint every 8 minutes so Render never spins the
+    service down.  IMPORTANT: must use the PUBLIC external URL — localhost pings
+    do NOT reset Render's inactivity timer.  Falls back to localhost as a last
+    resort so the loop never dies, but external ping is always attempted first.
     """
-    self_url  = os.environ.get("RENDER_EXTERNAL_URL", f"http://localhost:{PORT}").rstrip("/")
-    ping_url  = f"{self_url}/ping"
-    interval  = 300  # 5 minutes — aggressive ping to never miss a lecture session
-    logger.info(f"[KeepAlive] Starting — pinging {ping_url} every {interval}s")
+    external_ping = f"{RENDER_PUBLIC_URL}/ping"
+    local_ping    = f"http://localhost:{PORT}/ping"
+    interval      = 480   # 8 minutes — well inside Render's 15-min inactivity window
+    logger.info(f"[KeepAlive] Starting — external ping every {interval}s → {external_ping}")
+
     while True:
         time_mod.sleep(interval)
-        try:
-            urllib.request.urlopen(ping_url, timeout=10)
-            logger.info("[KeepAlive] ✓ Heartbeat OK")
-        except Exception as e:
-            logger.warning(f"[KeepAlive] ✗ Ping failed: {e}")
+        success = False
+
+        # ── Try external URL first (mandatory to prevent Render sleep) ──────
+        for url in (external_ping, local_ping):
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "WppexKeepalive/1.0"})
+                resp = urllib.request.urlopen(req, timeout=15)
+                body = resp.read().decode("utf-8", errors="ignore")[:200]
+                wat_now = datetime.now(NIGERIA_TZ).strftime("%H:%M:%S WAT")
+                logger.info(f"[KeepAlive] ✅ {wat_now} — alive ({url.split('/')[2]}): {body[:80]}")
+                success = True
+                break
+            except Exception as e:
+                logger.warning(f"[KeepAlive] ✗ {url} → {e}")
+
+        if not success:
+            logger.error("[KeepAlive] ✗✗ BOTH ping targets failed — bot may be unreachable")
 
 
 if __name__ == "__main__":
