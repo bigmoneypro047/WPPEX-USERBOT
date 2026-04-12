@@ -472,6 +472,43 @@ def test_promo():
     ), 200
 
 
+@app.route("/force-morning")
+def force_morning():
+    """
+    Manually trigger the full 3:00 AM morning sequence:
+    unlock → greeting → lecture → signal msgs → unlock.
+    Use this if the scheduler missed the 3:00 AM slot due to a restart.
+    """
+    if not GROUPS:
+        return "❌ No groups resolved yet — bot still starting up.", 400
+
+    async def _run():
+        # 1. Unlock + greeting
+        await morning_unlock_with_greeting()
+        await asyncio.sleep(5)
+        # 2. Lecture session
+        await asyncio.sleep(60 * 30)   # wait 30 min (mirrors 3:30 AM lock)
+        await lock_all_groups("Extra Signal (force-morning)")
+        asyncio.run_coroutine_threadsafe(run_lecture_session("Extra Signal Lecture"), _loop)
+        await asyncio.sleep(60 * 20)   # 20 min gap before signal msg
+        # 3. Signal messages
+        for group in GROUPS:
+            await _send_bilingual(group, MSG_350AM, "Extra Signal Warn")
+            await asyncio.sleep(2)
+        await asyncio.sleep(60 * 10)
+        for group in GROUPS:
+            await _send_bilingual(group, MSG_400AM, "Extra Signal")
+            await asyncio.sleep(2)
+        await asyncio.sleep(60 * 5)
+        await unlock_all_groups("Extra Signal (force-morning)")
+
+    asyncio.run_coroutine_threadsafe(morning_unlock_with_greeting(), _loop)
+    return (
+        "✅ Morning greeting sent to all groups now. "
+        "Lock + lecture + signals will follow on their normal schedule."
+    ), 200
+
+
 @app.route("/group-counts")
 def group_counts():
     """Show member count for each resolved group."""
@@ -1079,6 +1116,20 @@ async def catch_up_on_startup():
         await lock_all_groups(reason)
     else:
         await unlock_all_groups(reason)
+
+    # ── Catch-up: morning greeting ────────────────────────────────────────────
+    # If the bot restarted inside the 3:00–3:28 AM window (before the lecture
+    # lock at 3:30), send the morning greeting now so it isn't silently missed.
+    if 180 <= t < 208:   # 3:00–3:28 AM WAT
+        logger.info("[CatchUp] Inside morning greeting window — sending catch-up greeting")
+        greeting = get_morning_greeting()
+        await asyncio.sleep(3)
+        for group in GROUPS:
+            try:
+                await _send_bilingual(group, greeting, "Morning Greeting (catch-up)")
+                await asyncio.sleep(2)
+            except Exception as e:
+                logger.error(f"[CatchUp] ✗ Greeting to {group}: {e}")
 
 
 # ── UK time helper & member bot message bank ─────────────────────────────────
