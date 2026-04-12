@@ -915,18 +915,26 @@ async def _send_bilingual(group, english_msg: str, label: str):
     is_bold = english_msg.startswith("**") and english_msg.endswith("**")
     plain = english_msg[2:-2] if is_bold else english_msg
     indonesian = await _translate_to_indonesian(plain)
+    # Use HTML bold — avoids markdown parse failures on special characters
     if is_bold:
-        bilingual = f"🇬🇧 **{plain}**\n\n🇮🇩 **{indonesian}**"
+        bilingual = f"🇬🇧 <b>{plain}</b>\n\n🇮🇩 <b>{indonesian}</b>"
     else:
         bilingual = f"🇬🇧 {plain}\n\n🇮🇩 {indonesian}"
     try:
-        await bot_client.send_message(group, bilingual, parse_mode="md")
+        await bot_client.send_message(group, bilingual, parse_mode="html")
         logger.info(f"[{label}] ✓ Bilingual sent to '{getattr(group,'title',group)}'")
     except FloodWaitError as e:
         await asyncio.sleep(e.seconds)
-        await bot_client.send_message(group, bilingual, parse_mode="md")
+        await bot_client.send_message(group, bilingual, parse_mode="html")
     except Exception as e:
-        logger.error(f"[{label}] ✗ Bilingual send failed: {e}")
+        logger.error(f"[{label}] ✗ Bilingual send failed to '{getattr(group,'title',group)}': {e}")
+        # Fallback — send plain text without any formatting
+        try:
+            plain_bilingual = f"🇬🇧 {plain}\n\n🇮🇩 {indonesian}"
+            await bot_client.send_message(group, plain_bilingual)
+            logger.info(f"[{label}] ✓ Bilingual (plain fallback) sent to '{getattr(group,'title',group)}'")
+        except Exception as e2:
+            logger.error(f"[{label}] ✗ Plain fallback also failed: {e2}")
 
 
 async def send_to_all_groups(message: str, label: str):
