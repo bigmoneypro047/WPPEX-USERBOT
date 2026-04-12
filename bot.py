@@ -1970,9 +1970,9 @@ async def _fire_promo_for_group(target_group, bypass_lock_guard: bool = False):
         except Exception as exc:
             logger.error(f"[Promo] Bot{bot_num} → '{getattr(target_group,'title',target_group.id)}': {exc}")
 
-        # 10-minute gap between bot turns (natural group conversation pace)
+        # Gap between bot turns — 4–6 minutes feels natural, keeps conversation moving
         if i < len(chosen) - 1:
-            await asyncio.sleep(random.uniform(560, 640))
+            await asyncio.sleep(random.uniform(240, 360))
 
 
 async def _fire_promo_session(bypass_lock_guard: bool = False):
@@ -2348,7 +2348,9 @@ def run_scheduler():
     schedule.every().day.at(get_utc(9,   0)).do(fire_promo)   # 9:00 AM WAT
     schedule.every().day.at(get_utc(10,  0)).do(fire_promo)   # 10:00 AM WAT (clears 11:22 ready by ~90min)
     #
-    # Post-first-signal window (12:05 PM – 13:22 PM) = only 77 min — too tight, skipped
+    # Post-first-signal window (12:05 PM – 13:22 PM):
+    #   With 5-min gaps: 4 msgs × 5 min = 20 min — safe to start at 12:20 PM (finishes ~12:40)
+    schedule.every().day.at(get_utc(12, 20)).do(fire_promo)   # 12:20 PM WAT
     #
     # Post-second-signal window (14:05 PM – 17:00 PM):
     #   → last safe start = 17:00 - 90min = 15:30 PM
@@ -2617,6 +2619,37 @@ async def start_bot():
             logger.info(f"[Greeting] ✓ Replied to greeting: '{text[:30]}' → '{reply_text[:40]}'")
         except Exception as exc:
             logger.error(f"[Greeting] ✗ {exc}")
+
+    # ── Startup safety net ────────────────────────────────────────────────────
+    # On every restart: unlock groups (if we're outside a lock window) and fire
+    # one promo session so conversations start right away instead of waiting up
+    # to 90 minutes for the next scheduled slot.
+    async def startup_catchup():
+        """Run 3 minutes after startup — unlock groups and kickstart conversations."""
+        await asyncio.sleep(180)   # wait for groups to resolve, member bots to connect
+
+        wat_now = datetime.now(NIGERIA_TZ).strftime("%H:%M WAT")
+        logger.info(f"[Startup] Running catchup at {wat_now}")
+
+        # Unlock groups if we're outside every signal lock window
+        if not _near_lock_window(warn_minutes=0):
+            logger.info("[Startup] Outside lock windows — ensuring groups are unlocked")
+            try:
+                await unlock_all_groups("StartupUnlock")
+            except Exception as e:
+                logger.warning(f"[Startup] unlock failed: {e}")
+
+        # Fire a promo conversation if we're not near any lock window
+        if not _near_lock_window(warn_minutes=15):
+            logger.info("[Startup] Firing catchup promo session")
+            try:
+                await _fire_promo_session()
+            except Exception as e:
+                logger.warning(f"[Startup] catchup promo failed: {e}")
+        else:
+            logger.info("[Startup] Skipping catchup promo — too close to lock window")
+
+    asyncio.ensure_future(startup_catchup())
 
     sched_thread = threading.Thread(target=run_scheduler, daemon=True)
     sched_thread.start()
