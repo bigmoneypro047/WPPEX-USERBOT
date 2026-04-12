@@ -857,12 +857,12 @@ GREETING_REPLIES_ID = [
 _TRANSLATION_CACHE: dict = {}
 
 
-def _translate_chunk_lang(text: str, lang: str) -> str:
-    """Translate one chunk (≤500 chars) EN→{lang} via MyMemory free API."""
+def _translate_chunk_lang(text: str, lang: str, src: str = "en") -> str:
+    """Translate one chunk (≤500 chars) {src}→{lang} via MyMemory free API."""
     import urllib.parse
     url = ("https://api.mymemory.translated.net/get?q="
            + urllib.parse.quote(text[:499])
-           + f"&langpair=en|{lang}")
+           + f"&langpair={src}|{lang}")
     try:
         resp = urllib.request.urlopen(url, timeout=10)
         data = json.loads(resp.read())
@@ -879,8 +879,8 @@ def _translate_chunk(text: str) -> str:
     return _translate_chunk_lang(text, "id")
 
 
-async def _translate_text(text: str, lang: str) -> str:
-    """Async translate EN→{lang}, splitting into ≤490-char sentence chunks."""
+async def _translate_text(text: str, lang: str, src: str = "en") -> str:
+    """Async translate {src}→{lang}, splitting into ≤490-char sentence chunks."""
     loop = asyncio.get_event_loop()
     sentences = re.split(r'(?<=[.!?])\s+', text.strip())
     chunks, current = [], ""
@@ -895,17 +895,24 @@ async def _translate_text(text: str, lang: str) -> str:
         chunks.append(current)
     translated_parts = []
     for chunk in chunks:
-        part = await loop.run_in_executor(None, _translate_chunk_lang, chunk, lang)
+        part = await loop.run_in_executor(
+            None, lambda c=chunk: _translate_chunk_lang(c, lang, src)
+        )
         translated_parts.append(part)
     return " ".join(translated_parts)
 
 
 async def _translate_to_indonesian(text: str) -> str:
-    return await _translate_text(text, "id")
+    return await _translate_text(text, "id", src="en")
 
 
 async def _translate_to_spanish(text: str) -> str:
-    return await _translate_text(text, "es")
+    return await _translate_text(text, "es", src="en")
+
+
+async def _translate_id_to_spanish(text: str) -> str:
+    """Translate Indonesian → Spanish (for member bot messages in Nicaragua group)."""
+    return await _translate_text(text, "es", src="id")
 
 
 async def _translate_cached(text: str) -> str:
@@ -1705,9 +1712,15 @@ async def _fire_promo_for_group(target_group, bypass_lock_guard: bool = False):
             logger.info(f"[Promo] '{grp_title}' — approaching lock window, stopping conversation.")
             return
 
-        # Send in English for now — translation re-enabled once flow confirmed
-        send_text = text
-        logger.info(f"[Promo] Bot{bot_num} → sending message")
+        # Route language by group:
+        #   Indonesia group (INDONESIAN_GROUP_ID) → Indonesian (already in PROMO_TOPICS)
+        #   Nicaragua group (SPANISH_GROUP_ID)    → translate Indonesian → Spanish
+        gid = _bare_id(target_group.id)
+        if gid == SPANISH_GROUP_ID:
+            send_text = await _translate_id_to_spanish(text)
+        else:
+            send_text = text   # Indonesian as stored in PROMO_TOPICS
+        logger.info(f"[Promo] Bot{bot_num} → sending message ({'es' if gid == SPANISH_GROUP_ID else 'id'})")
 
         try:
             sent = await client.send_message(group_entity, send_text, reply_to=reply_to)
@@ -1864,7 +1877,12 @@ async def setup_member_event_handlers(client, groups, bot_idx: int, member_ids: 
                 return
             # Stagger: each bot waits its own natural-feeling delay
             await asyncio.sleep(random.uniform(4, 18) + bot_idx * 9)
-            response = get_greeting_response(msg)
+            english_response = get_greeting_response(msg)
+            # Translate per group language
+            if _bare_id(event.chat_id) == SPANISH_GROUP_ID:
+                response = await _translate_to_spanish(english_response)
+            else:
+                response = await _translate_to_indonesian(english_response)
             await client.send_message(event.chat_id, response)
             logger.info(f"[MemberBot {bot_idx+1}] Greeted back: {response!r}")
         except Exception as exc:
@@ -1936,20 +1954,31 @@ async def start_member_bots():
 
 
 async def _mbr_send(bot_idx: int, msg: str, label: str):
-    """Send a message from member bot at bot_idx (0-based) to all 3 main groups."""
+    """
+    Send a message from member bot at bot_idx (0-based) to all active groups.
+    msg is always English — translated per group:
+      Indonesia group (INDONESIAN_GROUP_ID) → Indonesian
+      Nicaragua group (SPANISH_GROUP_ID)    → Spanish
+    """
     if not MEMBER_CLIENTS:
         logger.warning(f"[{label}] No member bots connected yet.")
         return
     idx = bot_idx % len(MEMBER_CLIENTS)
     client, groups = MEMBER_CLIENTS[idx]
     for g in groups:
+        gid = _bare_id(g.id)
+        if gid == SPANISH_GROUP_ID:
+            send_text = await _translate_to_spanish(msg)
+        else:
+            send_text = await _translate_to_indonesian(msg)
         try:
-            await client.send_message(g, msg)
-            logger.info(f"[{label}] ✓ Bot{idx+1} → '{getattr(g, 'title', g.id)}'")
+            await client.send_message(g, send_text)
+            logger.info(f"[{label}] ✓ Bot{idx+1} → '{getattr(g, 'title', g.id)}' "
+                        f"({'es' if gid == SPANISH_GROUP_ID else 'id'})")
             await asyncio.sleep(2)
         except FloodWaitError as e:
             await asyncio.sleep(e.seconds)
-            await client.send_message(g, msg)
+            await client.send_message(g, send_text)
         except Exception as e:
             logger.error(f"[{label}] ✗ Bot{idx+1}: {e}")
 
