@@ -814,8 +814,10 @@ async def unlock_all_groups(label: str):
             logger.error(f"[{label}] ✗ Failed to unlock '{title}': {type(e).__name__}: {e}")
 
 
-# ── Bilingual (English + Indonesian) for the large group ────────────────────
-BILINGUAL_GROUP_ID = 3684122277   # QT Investment Group — 476 members
+# ── Bilingual group settings ─────────────────────────────────────────────────
+BILINGUAL_GROUP_ID  = 3684122277   # legacy (deleted) — kept to avoid reference errors
+INDONESIAN_GROUP_ID = 3542874163   # QT Investment Group  → English + Indonesian 🇮🇩
+SPANISH_GROUP_ID    = 3814574407   # QT Grupo Nicaragua   → English + Spanish    🇳🇮
 
 # ── Greeting auto-reply ──────────────────────────────────────────────────────
 GREETING_KEYWORDS = {
@@ -855,12 +857,12 @@ GREETING_REPLIES_ID = [
 _TRANSLATION_CACHE: dict = {}
 
 
-def _translate_chunk(text: str) -> str:
-    """Translate one chunk (≤500 chars) EN→ID via MyMemory free API."""
+def _translate_chunk_lang(text: str, lang: str) -> str:
+    """Translate one chunk (≤500 chars) EN→{lang} via MyMemory free API."""
     import urllib.parse
     url = ("https://api.mymemory.translated.net/get?q="
            + urllib.parse.quote(text[:499])
-           + "&langpair=en|id")
+           + f"&langpair=en|{lang}")
     try:
         resp = urllib.request.urlopen(url, timeout=10)
         data = json.loads(resp.read())
@@ -868,14 +870,18 @@ def _translate_chunk(text: str) -> str:
         if result and data.get("responseStatus") == 200:
             return result
     except Exception as e:
-        logger.warning(f"[Translate] chunk failed: {e}")
+        logger.warning(f"[Translate] chunk ({lang}) failed: {e}")
     return text   # fall back to original on error
 
 
-async def _translate_to_indonesian(text: str) -> str:
-    """Async wrapper — runs translation in executor so it doesn't block the loop."""
+def _translate_chunk(text: str) -> str:
+    """Backwards-compatible wrapper — EN→ID."""
+    return _translate_chunk_lang(text, "id")
+
+
+async def _translate_text(text: str, lang: str) -> str:
+    """Async translate EN→{lang}, splitting into ≤490-char sentence chunks."""
     loop = asyncio.get_event_loop()
-    # Split long text into ≤490-char sentence chunks
     sentences = re.split(r'(?<=[.!?])\s+', text.strip())
     chunks, current = [], ""
     for s in sentences:
@@ -887,12 +893,19 @@ async def _translate_to_indonesian(text: str) -> str:
             current = s
     if current:
         chunks.append(current)
-
     translated_parts = []
     for chunk in chunks:
-        part = await loop.run_in_executor(None, _translate_chunk, chunk)
+        part = await loop.run_in_executor(None, _translate_chunk_lang, chunk, lang)
         translated_parts.append(part)
     return " ".join(translated_parts)
+
+
+async def _translate_to_indonesian(text: str) -> str:
+    return await _translate_text(text, "id")
+
+
+async def _translate_to_spanish(text: str) -> str:
+    return await _translate_text(text, "es")
 
 
 async def _translate_cached(text: str) -> str:
@@ -910,29 +923,38 @@ def _group_id(group) -> int:
 
 
 async def _send_bilingual(group, english_msg: str, label: str):
-    """Send a message in English + Indonesian to any group."""
-    # Strip surrounding ** for clean translation, remember if bold
+    """
+    Send English + translated message to a group.
+    - QT Investment Group  (INDONESIAN_GROUP_ID) → 🇬🇧 English + 🇮🇩 Indonesian
+    - QT Grupo Nicaragua   (SPANISH_GROUP_ID)    → 🇬🇧 English + 🇳🇮 Spanish
+    """
     is_bold = english_msg.startswith("**") and english_msg.endswith("**")
     plain = english_msg[2:-2] if is_bold else english_msg
-    indonesian = await _translate_to_indonesian(plain)
-    # Use HTML bold — avoids markdown parse failures on special characters
-    if is_bold:
-        bilingual = f"🇬🇧 <b>{plain}</b>\n\n🇮🇩 <b>{indonesian}</b>"
+
+    gid = _group_id(group)
+    if gid == SPANISH_GROUP_ID:
+        translated = await _translate_to_spanish(plain)
+        flag2 = "🇳🇮"
     else:
-        bilingual = f"🇬🇧 {plain}\n\n🇮🇩 {indonesian}"
+        translated = await _translate_to_indonesian(plain)
+        flag2 = "🇮🇩"
+
+    if is_bold:
+        bilingual = f"🇬🇧 <b>{plain}</b>\n\n{flag2} <b>{translated}</b>"
+    else:
+        bilingual = f"🇬🇧 {plain}\n\n{flag2} {translated}"
+
     try:
         await bot_client.send_message(group, bilingual, parse_mode="html")
-        logger.info(f"[{label}] ✓ Bilingual sent to '{getattr(group,'title',group)}'")
+        logger.info(f"[{label}] ✓ Sent ({flag2}) to '{getattr(group,'title',group)}'")
     except FloodWaitError as e:
         await asyncio.sleep(e.seconds)
         await bot_client.send_message(group, bilingual, parse_mode="html")
     except Exception as e:
-        logger.error(f"[{label}] ✗ Bilingual send failed to '{getattr(group,'title',group)}': {e}")
-        # Fallback — send plain text without any formatting
+        logger.error(f"[{label}] ✗ Failed to '{getattr(group,'title',group)}': {e}")
         try:
-            plain_bilingual = f"🇬🇧 {plain}\n\n🇮🇩 {indonesian}"
-            await bot_client.send_message(group, plain_bilingual)
-            logger.info(f"[{label}] ✓ Bilingual (plain fallback) sent to '{getattr(group,'title',group)}'")
+            await bot_client.send_message(group, f"🇬🇧 {plain}\n\n{flag2} {translated}")
+            logger.info(f"[{label}] ✓ Plain fallback sent to '{getattr(group,'title',group)}'")
         except Exception as e2:
             logger.error(f"[{label}] ✗ Plain fallback also failed: {e2}")
 
