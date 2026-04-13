@@ -992,6 +992,19 @@ GREETING_REPLIES_ID = [
     "Selamat datang! Kamu ada di tempat yang tepat 💯",
 ]
 
+GREETING_REPLIES_ES = [
+    "¡Hola! ¡Qué bueno tenerte aquí! 😊",
+    "¡Hola! 👋 ¡Bienvenido!",
+    "¡Buenos días! Espero que estés bien 🌟",
+    "¡Hola! Me alegra que estés con nosotros 🙌",
+    "¡Hola! ¡Que sea un día muy rentable! 💰",
+    "¡Buenos días! Listos para las señales de hoy 🌅",
+    "¡Hola! Qué gusto verte 💪 ¡Atentos a las señales de hoy! 📈",
+    "¡Hola amigo! Me alegra que estés aquí 🙏",
+    "¡Hola! ¡Bienvenido! Este grupo está cambiando vidas 🔥",
+    "¡Bienvenido! Estás en el lugar correcto 💯",
+]
+
 # Translation cache — avoids repeated API calls for same text
 _TRANSLATION_CACHE: dict = {}
 
@@ -1119,9 +1132,20 @@ async def _send_bilingual(group, english_msg: str, label: str):
     if gid == SPANISH_GROUP_ID:
         translated = await _translate_to_spanish(plain)
         flag2 = "🇳🇮"
+        # Guard: if translation silently returned same English text, retry once
+        if translated.strip().lower() == plain.strip().lower():
+            logger.warning(f"[{label}] ⚠ ES translation returned source text — retrying")
+            await asyncio.sleep(3)
+            translated = await _translate_to_spanish(plain)
+            if translated.strip().lower() == plain.strip().lower():
+                logger.error(f"[{label}] ✗ ES translation failed twice — using source text")
     else:
         translated = await _translate_to_indonesian(plain)
         flag2 = "🇮🇩"
+        if translated.strip().lower() == plain.strip().lower():
+            logger.warning(f"[{label}] ⚠ ID translation returned source text — retrying")
+            await asyncio.sleep(3)
+            translated = await _translate_to_indonesian(plain)
 
     if is_bold:
         bilingual = f"🇬🇧 <b>{plain}</b>\n\n{flag2} <b>{translated}</b>"
@@ -1588,7 +1612,7 @@ def _pick_next_lecture(used_in_session=None):
 
 
 async def send_one_lecture(msg: str, topic: str = ""):
-    """Bold-format one lecture message and send to all groups in English + Indonesian."""
+    """Bold-format one lecture message and send to all groups (bilingual per group language)."""
     formatted = f"**{msg}**"
     for group in GROUPS:
         try:
@@ -1950,6 +1974,11 @@ async def _fire_promo_for_group(target_group, bypass_lock_guard: bool = False):
         gid = _bare_id(target_group.id)
         if gid == SPANISH_GROUP_ID:
             send_text = await _translate_id_to_spanish(text)
+            # Guard: retry if translation silently returned same Indonesian text
+            if send_text.strip().lower() == text.strip().lower():
+                logger.warning(f"[Promo] ⚠ ID→ES returned source text — retrying in 3s")
+                await asyncio.sleep(3)
+                send_text = await _translate_id_to_spanish(text)
         else:
             send_text = text   # Indonesian as stored in PROMO_TOPICS
         logger.info(f"[Promo] Bot{bot_num} → sending message ({'es' if gid == SPANISH_GROUP_ID else 'id'})")
@@ -2208,8 +2237,17 @@ async def _mbr_send(bot_idx: int, msg: str, label: str):
         gid = _bare_id(g.id)
         if gid == SPANISH_GROUP_ID:
             send_text = await _translate_to_spanish(msg)
+            # Guard: retry if translation silently returned same English text
+            if send_text.strip().lower() == msg.strip().lower():
+                logger.warning(f"[{label}] ⚠ ES translation returned source — retrying")
+                await asyncio.sleep(3)
+                send_text = await _translate_to_spanish(msg)
         else:
             send_text = await _translate_to_indonesian(msg)
+            if send_text.strip().lower() == msg.strip().lower():
+                logger.warning(f"[{label}] ⚠ ID translation returned source — retrying")
+                await asyncio.sleep(3)
+                send_text = await _translate_to_indonesian(msg)
         try:
             await client.send_message(g, send_text)
             logger.info(f"[{label}] ✓ Bot{idx+1} → '{getattr(g, 'title', g.id)}' "
@@ -2612,8 +2650,12 @@ async def start_bot():
             await asyncio.sleep(random.randint(5, 20))
 
             chosen_client, chosen_group = random.choice(bots_for_group)
-            # Always reply in Indonesian
-            reply_text = random.choice(GREETING_REPLIES_ID)
+            # Reply in the correct language for this group
+            gid = _bare_id(event.chat_id)
+            if gid == SPANISH_GROUP_ID:
+                reply_text = random.choice(GREETING_REPLIES_ES)
+            else:
+                reply_text = random.choice(GREETING_REPLIES_ID)
 
             await chosen_client.send_message(chosen_group, reply_text, reply_to=event.id)
             logger.info(f"[Greeting] ✓ Replied to greeting: '{text[:30]}' → '{reply_text[:40]}'")
