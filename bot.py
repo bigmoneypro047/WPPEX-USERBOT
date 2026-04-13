@@ -2621,25 +2621,44 @@ async def start_bot():
             logger.error(f"[Greeting] ✗ {exc}")
 
     # ── Startup safety net ────────────────────────────────────────────────────
-    # On every restart: unlock groups (if we're outside a lock window) and fire
-    # one promo session so conversations start right away instead of waiting up
-    # to 90 minutes for the next scheduled slot.
+    # On every restart: restore correct group state and kickstart conversations.
+    # CRITICAL: must respect the night lock (17:00–03:00 WAT) — no unlock, no
+    # promo, no messages of any kind during overnight hours.
     async def startup_catchup():
-        """Run 3 minutes after startup — unlock groups and kickstart conversations."""
+        """Run 3 minutes after startup — restore correct state and optionally send promo."""
         await asyncio.sleep(180)   # wait for groups to resolve, member bots to connect
 
-        wat_now = datetime.now(NIGERIA_TZ).strftime("%H:%M WAT")
-        logger.info(f"[Startup] Running catchup at {wat_now}")
+        now_wat = datetime.now(NIGERIA_TZ)
+        h = now_wat.hour
+        wat_str = now_wat.strftime("%H:%M WAT")
+        logger.info(f"[Startup] Running catchup at {wat_str}")
 
-        # Unlock groups if we're outside every signal lock window
+        # ── Night hours: 17:00 – 02:59 WAT — groups must stay locked, no activity ──
+        in_night = (h >= 17 or h < 3)
+        if in_night:
+            logger.info("[Startup] Night hours (17:00–03:00 WAT) — re-locking groups, no promo")
+            try:
+                await lock_all_groups("NightRelock")
+            except Exception as e:
+                logger.warning(f"[Startup] Night relock failed: {e}")
+            return   # nothing else — bot stays quiet until 3:00 AM scheduler fires
+
+        # ── Morning prep window: 03:00–03:29 WAT — morning unlock scheduled at 3:00 ──
+        # Don't interfere; the scheduler will handle it in seconds
+        if h == 3 and now_wat.minute < 30:
+            logger.info("[Startup] Morning prep window — scheduler handles unlock at 3:00 AM")
+            return
+
+        # ── Day hours: outside all restricted windows ─────────────────────────────
+        # Unlock groups if not inside a signal lock window
         if not _near_lock_window(warn_minutes=0):
-            logger.info("[Startup] Outside lock windows — ensuring groups are unlocked")
+            logger.info("[Startup] Day hours — ensuring groups are unlocked")
             try:
                 await unlock_all_groups("StartupUnlock")
             except Exception as e:
                 logger.warning(f"[Startup] unlock failed: {e}")
 
-        # Fire a promo conversation if we're not near any lock window
+        # Fire a promo conversation if safely away from any lock window
         if not _near_lock_window(warn_minutes=15):
             logger.info("[Startup] Firing catchup promo session")
             try:
@@ -2647,7 +2666,7 @@ async def start_bot():
             except Exception as e:
                 logger.warning(f"[Startup] catchup promo failed: {e}")
         else:
-            logger.info("[Startup] Skipping catchup promo — too close to lock window")
+            logger.info("[Startup] Skipping catchup promo — too close to a signal lock window")
 
     asyncio.ensure_future(startup_catchup())
 
